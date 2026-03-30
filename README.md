@@ -25,6 +25,131 @@ It is aimed at projects that want a small, explicit, predictable callback abstra
 - Compile-time fit checks for size and alignment
 - Works with move-only callables
 
+## Why tiny_delegate?
+
+`tiny_delegate` is strong not because it tries to beat every callback library on every axis, but because it hits a very practical balance:
+
+- explicit lifetime semantics
+- predictable ownership
+- low-level control over size and alignment
+- simple API surface
+- good fit for embedded and systems code
+
+### What is especially good about it
+
+- It gives you three clear tools instead of one overloaded abstraction:
+  - `delegate_ref` for non-owning callback views
+  - `delegate_sbo` for owning-only callbacks
+  - `delegate` for hybrid "automatic chooser" behavior
+- `tiny::delegate` is unusually practical because it can switch between:
+  - function pointer path
+  - owning functor/lambda path
+  - explicit `borrow(...)` ref path
+  - explicit `bind<&T::method>(obj)` ref path
+- `borrow` and `bind` are explicit, which makes lifetime intent visible in code instead of hidden in implicit conversions.
+- Size and alignment are first-class configuration knobs:
+  - `InlineBytes`
+  - `InlineAlign`
+  - `fits_inline`
+  - `required_inline_bytes`
+  - `required_inline_align`
+  - `static_assert_fits_inline`
+- Heap fallback can be disabled completely, which is a very strong property for embedded code.
+- Oversized or over-aligned owning callables can fail at compile time instead of surprising you at runtime.
+- Introspection is built in:
+  - `owning()`
+  - `non_owning()`
+  - `uses_inline()`
+  - `uses_heap()`
+
+### Why that matters in practice
+
+For ordinary application code, many callback wrappers are "good enough".
+
+For low-level code, firmware, hot paths, or callback-heavy infrastructure, the usual questions are:
+
+- who owns the callable?
+- is this a borrowed reference or an owned object?
+- can this allocate?
+- will this fit inline?
+- what happens if alignment is larger than expected?
+
+`tiny_delegate` answers those questions directly in the API.
+
+### Compared with common alternatives
+
+#### Compared with `llvm::function_ref`
+
+`llvm::function_ref` is a non-owning callable reference and is mainly intended for short-lived parameter use.
+
+`tiny_delegate` gives you that style through `delegate_ref`, but also adds:
+
+- owning delegates
+- SBO
+- optional heap fallback
+- explicit member binding
+- one hybrid type that can do both owning and ref modes
+
+If you only want a tiny non-owning parameter wrapper, `llvm::function_ref` is simpler.
+If you want one small library that covers both stored and non-stored callbacks, `tiny_delegate` is broader.
+
+#### Compared with `absl::AnyInvocable`
+
+`absl::AnyInvocable` is a move-only owning callable wrapper.
+
+`tiny_delegate` is stronger when you want:
+
+- an explicit non-owning companion type
+- explicit `borrow(...)`
+- explicit method binding
+- size and alignment surfaced as part of the public API
+- embedded-friendly "no heap fallback" configuration
+
+If you only need a production-grade move-only owning wrapper inside the Abseil ecosystem, `AnyInvocable` is a strong choice.
+If you want a unified owning + non-owning delegate toolbox, `tiny_delegate` gives you more structure.
+
+#### Compared with `function2`
+
+`function2` is a very feature-rich library. It supports copyable wrappers, move-only wrappers, non-owning views, richer qualifier handling and multi-signature overload support.
+
+`tiny_delegate` is attractive when you want something smaller and easier to reason about:
+
+- simpler mental model
+- explicit ownership split
+- direct embedded-oriented size/alignment controls
+- direct `borrow` / `bind` APIs
+
+If you need maximum wrapper expressiveness, `function2` may be stronger.
+If you want a smaller, more focused delegate library with very explicit semantics, `tiny_delegate` is often the nicer fit.
+
+#### Compared with ETL-style embedded delegates
+
+ETL-style delegates are often very good for embedded work, especially when you want non-owning callback references.
+
+`tiny_delegate` adds a useful extra layer:
+
+- a dedicated non-owning type
+- a dedicated owning type
+- a hybrid type that can choose automatically
+- compile-time size/alignment fit tooling for owned callables
+
+That makes it attractive when your project mixes classic embedded callback references with modern lambdas and move-only functors.
+
+### Honest limitations
+
+`tiny_delegate` is not trying to be the best at everything.
+
+Other libraries may be better if you need:
+
+- copyable owning delegates as the main API
+- allocator-aware wrappers
+- multiple overload signatures in one wrapper type
+- full cv/ref/noexcept-qualified wrapper signatures
+- a very large existing ecosystem around the callback type
+
+Its strength is not "maximum feature count".
+Its strength is clarity, predictability, and a very good ownership model for real systems code.
+
 ## Header
 
 ```cpp
