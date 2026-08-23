@@ -204,6 +204,38 @@ indirection, and the empty-check branch is laid out cold via
 application explicitly enabled the fallback, so its cost is constant and
 deterministic — the property that matters on an MCU.
 
+## Where does a callable live?
+
+Every cell below was measured with intercepted `operator new`, not quoted
+from documentation (x64; buffer sizes: libstdc++ 16 B, MSVC ~48 B,
+tiny_delegate default 32 B on x64 / 16 B on a 32-bit MCU, configurable):
+
+| Capture | libstdc++ (GCC) | MSVC STL | tiny (default, no heap) | tiny (fallback = 1) |
+| --- | --- | --- | --- | --- |
+| POD, 8 B | inline | inline | inline, 0 allocs | inline, 0 allocs |
+| POD, 16 B | inline | inline | inline, 0 allocs | inline, 0 allocs |
+| POD, 24 B | 🔴 silent heap | inline | inline, 0 allocs | inline, 0 allocs |
+| POD, 100 B (over buffer) | 🔴 silent heap | 🔴 silent heap | 🟡 compile error, needed/available sizes in the message | heap, visible via `uses_heap()` |
+| non-trivial 8 B, move **not** noexcept | 🔴 silent heap | 🔴 silent heap | 🟡 compile error naming both fixes (add `noexcept`, or enable the fallback) | heap, visible via `uses_heap()` |
+| non-trivial 8 B, move noexcept | 🔴 silent heap\* | inline | inline, 0 allocs | inline, 0 allocs |
+
+\* libstdc++ additionally requires the callable to be trivially copyable
+("location invariant"), so even the `noexcept` variant goes to the heap.
+
+Three properties fall out of the table:
+
+- **No silent-heap cells.** tiny_delegate's columns contain only green
+  (inline, zero allocations) and explicit outcomes: a loud compile error
+  with the fix named, or a heap placement that `uses_heap()` reports.
+- **No compiler lottery.** The std columns disagree with each other
+  (compare the POD-24 and noexcept rows on GCC vs MSVC); the tiny columns
+  behave identically on GCC, Clang, MSVC, and arm-none-eabi, because the
+  placement rule is a single public formula: fits by size and alignment
+  (`fits_inline<T>()`) **and** is nothrow-move-constructible → inline;
+  otherwise heap (if enabled) or a compile error.
+- **The fallback build accepts everything std::function accepts** — the
+  strict no-heap guarantee is a choice, not a limitation.
+
 ## Consuming the library
 
 The library is a single header: nothing is compiled or linked, a consumer
