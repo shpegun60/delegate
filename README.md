@@ -11,6 +11,22 @@
 
 It is aimed at projects that want a small, explicit, predictable callback abstraction without immediately defaulting to `std::function`.
 
+The signature feature in one screenshot — a dispatch table that lives
+entirely in flash (verified in `.rodata`: 8 bytes per entry on ARM32,
+zero RAM, zero startup code):
+
+```cpp
+static constexpr tiny::delegate_ref<int(int)> rom_table[] = {
+    tiny::delegate_ref<int(int)>::bind<&freeDouble>(),
+    tiny::delegate_ref<int(int)>::bind<&freeNegate>(),
+    tiny::delegate_ref<int(int)>::bind<&StaticSvc::shift, g_svc>(),
+};
+```
+
+For ten compile-verified real-world recipes — ROM dispatch, driver
+callbacks, state tables, override policies, owning pipelines, tickcore
+timers — see **[COOKBOOK.md](COOKBOOK.md)**.
+
 ## Screenshot
 
 ![tiny_delegate Qt demon test UI](img/qt.png)
