@@ -37,6 +37,7 @@
 
 #include <cstddef>
 #include <cstdlib>    // std::abort (non-GNU trap fallback)
+#include <optional>   // call_if() result for non-void signatures
 #include <type_traits>
 #include <utility>
 #include <new>
@@ -286,6 +287,32 @@ public:
         return invoke_(payload_, std::forward<Args>(args)...);
     }
 
+    // Safe-call: empty is a legal state here, not a violation. Returns bool
+    // (called or not) for void signatures, std::optional<R> otherwise.
+    auto call_if(Args... args) const {
+        if constexpr (std::is_void_v<R>) {
+            if (!invoke_) return false;
+            invoke_(payload_, std::forward<Args>(args)...);
+            return true;
+        } else {
+            if (!invoke_) return std::optional<R>{};
+            return std::optional<R>(invoke_(payload_, std::forward<Args>(args)...));
+        }
+    }
+
+    // Safe-call with a fallback: invokes the delegate when engaged,
+    // otherwise the alternative callable, with the same arguments.
+    template <typename Alternative>
+    R call_or(Alternative&& alternative, Args... args) const {
+        static_assert(std::is_invocable_r_v<R, Alternative, Args...>,
+                      "tiny::delegate_ref::call_or: alternative signature mismatch.");
+        if (invoke_) {
+            return invoke_(payload_, std::forward<Args>(args)...);
+        }
+        return std::invoke(std::forward<Alternative>(alternative),
+                           std::forward<Args>(args)...);
+    }
+
 private:
     void*     payload_ = nullptr;
     invoke_t  invoke_  = nullptr;
@@ -387,6 +414,32 @@ public:
     R operator()(Args... args) const {
         TINY_DELEGATE_ASSERT(invoke_, "tiny::delegate_sbo: call on empty");
         return invoke_(ctx_, std::forward<Args>(args)...);
+    }
+
+    // Safe-call: empty is a legal state here, not a violation. Returns bool
+    // (called or not) for void signatures, std::optional<R> otherwise.
+    auto call_if(Args... args) const {
+        if constexpr (std::is_void_v<R>) {
+            if (!invoke_) return false;
+            invoke_(ctx_, std::forward<Args>(args)...);
+            return true;
+        } else {
+            if (!invoke_) return std::optional<R>{};
+            return std::optional<R>(invoke_(ctx_, std::forward<Args>(args)...));
+        }
+    }
+
+    // Safe-call with a fallback: invokes the delegate when engaged,
+    // otherwise the alternative callable, with the same arguments.
+    template <typename Alternative>
+    R call_or(Alternative&& alternative, Args... args) const {
+        static_assert(std::is_invocable_r_v<R, Alternative, Args...>,
+                      "tiny::delegate_sbo::call_or: alternative signature mismatch.");
+        if (invoke_) {
+            return invoke_(ctx_, std::forward<Args>(args)...);
+        }
+        return std::invoke(std::forward<Alternative>(alternative),
+                           std::forward<Args>(args)...);
     }
 
     delegate_sbo& operator=(std::nullptr_t) noexcept { reset(); return *this; }
@@ -626,6 +679,32 @@ public:
     R operator()(Args... args) const {
         TINY_DELEGATE_ASSERT(invoke_, "tiny::delegate: call on empty");
         return invoke_(ctx_, std::forward<Args>(args)...);
+    }
+
+    // Safe-call: empty is a legal state here, not a violation. Returns bool
+    // (called or not) for void signatures, std::optional<R> otherwise.
+    auto call_if(Args... args) const {
+        if constexpr (std::is_void_v<R>) {
+            if (!invoke_) return false;
+            invoke_(ctx_, std::forward<Args>(args)...);
+            return true;
+        } else {
+            if (!invoke_) return std::optional<R>{};
+            return std::optional<R>(invoke_(ctx_, std::forward<Args>(args)...));
+        }
+    }
+
+    // Safe-call with a fallback: invokes the delegate when engaged,
+    // otherwise the alternative callable, with the same arguments.
+    template <typename Alternative>
+    R call_or(Alternative&& alternative, Args... args) const {
+        static_assert(std::is_invocable_r_v<R, Alternative, Args...>,
+                      "tiny::delegate::call_or: alternative signature mismatch.");
+        if (invoke_) {
+            return invoke_(ctx_, std::forward<Args>(args)...);
+        }
+        return std::invoke(std::forward<Alternative>(alternative),
+                           std::forward<Args>(args)...);
     }
 
     delegate& operator=(std::nullptr_t) noexcept { reset(); return *this; }

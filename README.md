@@ -33,6 +33,9 @@ It is aimed at projects that want a small, explicit, predictable callback abstra
   (four machine words: 16 bytes on a 32-bit MCU, 32 on a 64-bit host)
 - Optional heap fallback
 - Explicit `borrow` and `bind` APIs
+- Safe-call helpers on every type: `call_if(args...)` (bool for void
+  signatures, `std::optional<R>` otherwise) and
+  `call_or(fallback, args...)` — for callbacks whose empty state is legal
 - Compile-time fit checks for size and alignment; non-callable arguments are
   rejected at overload resolution (SFINAE-constrained constructors)
 - Works with move-only callables
@@ -154,6 +157,13 @@ difference: `etl::delegate` spends zero instructions on the empty check
 and crashes uncontrolled when misused; `tiny::delegate_ref` spends two
 and traps deterministically — and `#define TINY_DELEGATE_ASSERT(e, m)
 ((void)0)` buys the ETL behavior back if those two instructions matter.
+
+`tiny_delegate` provides the same safe-call ergonomics as
+`etl::delegate` — `call_if(args...)` returning bool/`std::optional<R>` and
+`call_or(fallback, args...)` — on all three types, so the non-owning
+feature sets now match (the one exception: ETL's compile-time *instance*
+binding `create<T, Obj, &T::method>()`, which a captureless lambda
+`[]{ Obj.method(); }` reproduces in one line).
 
 What `etl::delegate` does not have at all is the owning tier:
 `tiny_delegate` adds
@@ -1461,6 +1471,30 @@ auto raw = &plus_one; // raw function pointer, not tiny::delegate
 ```
 
 This is the main `auto` pitfall to remember.
+
+## Safe-call helpers
+
+`operator()` treats an empty delegate as a contract violation (the default
+policy traps). When "no handler installed" is a *legal* state, use the
+safe-call helpers instead — available on `delegate_ref`, `delegate_sbo`,
+and `delegate` alike:
+
+```cpp
+tiny::delegate<int(int)> on_sample;               // may stay empty
+
+// call_if: invoke only when engaged.
+// void signature  -> bool  (was it called?)
+// R signature     -> std::optional<R>
+if (auto r = on_sample.call_if(42)) {
+    use(*r);
+}
+
+// call_or: invoke the delegate, or a fallback with the same arguments.
+int v = on_sample.call_or([](int x) { return x; }, 42);   // identity default
+```
+
+Both helpers never trap and never allocate; `call_or` statically checks the
+fallback against the delegate signature.
 
 ## Introspection APIs
 

@@ -211,8 +211,51 @@ static void nullptrClearsDelegate()
     // fail-closed policy; that path is tested in the lenient-assert build.)
 }
 
+static void safeCallHelpers()
+{
+    // --- call_if: порожній стан легальний, без trap ---
+    tiny::delegate_ref<int(int)> empty_ref;
+    assert(!empty_ref.call_if(1).has_value());          // nullopt, не trap
+
+    auto doubler = [](int x) { return x * 2; };
+    tiny::delegate_ref<int(int)> ref{tiny::borrow(doubler)};
+    auto got = ref.call_if(21);
+    assert(got.has_value() && *got == 42);
+
+    // void-сигнатура: bool "викликано чи ні"
+    int hits = 0;
+    auto bump = [&hits] { ++hits; };
+    tiny::delegate_ref<void()> vref;
+    assert(vref.call_if() == false && hits == 0);
+    vref = tiny::borrow(bump);
+    assert(vref.call_if() == true && hits == 1);
+
+    // --- call_or: fallback з тими самими аргументами ---
+    tiny::delegate_ref<int(int)> maybe;
+    assert(maybe.call_or([](int x) { return -x; }, 5) == -5);  // порожній -> fallback
+    maybe = tiny::borrow(doubler);
+    assert(maybe.call_or([](int x) { return -x; }, 5) == 10);  // зайнятий -> основний
+
+    // --- ті самі контракти на владіючих типах ---
+    tiny::delegate_sbo<int(int)> sbo_empty;
+    assert(!sbo_empty.call_if(1).has_value());
+    assert(sbo_empty.call_or([](int x) { return x + 100; }, 1) == 101);
+    tiny::delegate_sbo<int(int)> sbo{[](int x) { return x + 1; }};
+    assert(*sbo.call_if(41) == 42);
+    assert(sbo.call_or([](int) { return -1; }, 41) == 42);
+
+    tiny::delegate<void(int)> hyb_empty;
+    int sink = 0;
+    assert(hyb_empty.call_if(7) == false);
+    hyb_empty.call_or([&sink](int x) { sink = x; }, 7);        // void fallback
+    assert(sink == 7);
+    tiny::delegate<void(int)> hyb{[&sink](int x) { sink = x * 10; }};
+    assert(hyb.call_if(5) == true && sink == 50);
+}
+
 int main()
 {
+    safeCallHelpers();
     lifetimeAndMoveSemantics();
     hybridModesAndIntrospection();
     delegateRefContract();
