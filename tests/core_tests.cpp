@@ -253,8 +253,48 @@ static void safeCallHelpers()
     assert(hyb.call_if(5) == true && sink == 50);
 }
 
+// ---- Compile-time binding: functions and instances baked into the type. ----
+static int freeDouble(int x) { return x * 2; }
+static int freeNegate(int x) { return -x; }
+
+struct StaticSvc {
+    int base = 300;
+    int shift(int x) const { return base + x; }
+};
+static StaticSvc g_svc;                            // static storage + linkage
+
+// THE flash-table use case: a constexpr array of fully-bound delegates.
+static constexpr tiny::delegate_ref<int(int)> k_rom_table[] = {
+    tiny::delegate_ref<int(int)>::bind<&freeDouble>(),
+    tiny::delegate_ref<int(int)>::bind<&freeNegate>(),
+    tiny::delegate_ref<int(int)>::bind<&StaticSvc::shift, g_svc>(),
+};
+
+static void compileTimeBinding()
+{
+    // ROM table entries are callable and correct.
+    assert(k_rom_table[0](21) == 42);
+    assert(k_rom_table[1](5) == -5);
+    assert(k_rom_table[2](7) == 307);
+
+    // Compile-time instance binding sees the LIVE object, not a copy.
+    g_svc.base = 1000;
+    assert(k_rom_table[2](7) == 1007);
+    g_svc.base = 300;
+
+    // The hybrid delegate offers the same spellings (non-owning mode).
+    auto hf = tiny::delegate<int(int)>::bind<&freeDouble>();
+    assert(hf(4) == 8 && hf.non_owning());
+    auto hm = tiny::delegate<int(int)>::bind<&StaticSvc::shift, g_svc>();
+    assert(hm(1) == 301 && hm.non_owning());
+
+    // And they interoperate with the safe-call helpers.
+    assert(*hf.call_if(10) == 20);
+}
+
 int main()
 {
+    compileTimeBinding();
     safeCallHelpers();
     lifetimeAndMoveSemantics();
     hybridModesAndIntrospection();

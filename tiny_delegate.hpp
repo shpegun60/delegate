@@ -275,6 +275,42 @@ public:
     template <auto Method, class T, std::enable_if_t<!std::is_lvalue_reference_v<T&&>, int> = 0>
     static constexpr delegate_ref bind(T&&) = delete;
 
+    /**
+     * Compile-time free-function binding: the function is baked into the
+     * generated invoker, so the delegate is fully constexpr-constructible
+     * (ROM tables) and its payload stays unused.
+     */
+    template <auto Function,
+              std::enable_if_t<std::is_pointer_v<decltype(Function)>
+                               && std::is_function_v<std::remove_pointer_t<decltype(Function)>>,
+                               int> = 0>
+    static constexpr delegate_ref bind() noexcept {
+        static_assert(Function != nullptr,
+                      "tiny::delegate_ref::bind: function cannot be null.");
+        static_assert(std::is_invocable_r_v<R, decltype(Function), Args...>,
+                      "tiny::delegate_ref::bind: signature mismatch (args/return).");
+        delegate_ref d;
+        d.invoke_ = &invoke_function_static_<Function>;
+        return d;
+    }
+
+    /**
+     * Compile-time instance binding: both the method and the object (which
+     * must have static storage and linkage) are template arguments; nothing
+     * is loaded from the payload at call time.
+     */
+    template <auto Method, auto& Instance>
+    static constexpr delegate_ref bind() noexcept {
+        static_assert(std::is_member_function_pointer_v<decltype(Method)>,
+                      "tiny::delegate_ref::bind: Method must be a member function pointer.");
+        static_assert(std::is_invocable_r_v<R, decltype(Method),
+                                            decltype(Instance), Args...>,
+                      "tiny::delegate_ref::bind: signature mismatch (args/return).");
+        delegate_ref d;
+        d.invoke_ = &invoke_method_static_<Method, Instance>;
+        return d;
+    }
+
     constexpr void reset() noexcept {
         payload_ = nullptr;
         invoke_ = nullptr;
@@ -342,6 +378,18 @@ private:
         const T& o = *static_cast<const T*>(p);
         if constexpr (std::is_void_v<R>) { std::invoke(Method, o, std::forward<Args>(a)...); return; }
         else { return std::invoke(Method, o, std::forward<Args>(a)...); }
+    }
+
+    template <auto Function>
+    static R invoke_function_static_(void*, Args... a) {
+        if constexpr (std::is_void_v<R>) { Function(std::forward<Args>(a)...); return; }
+        else { return Function(std::forward<Args>(a)...); }
+    }
+
+    template <auto Method, auto& Instance>
+    static R invoke_method_static_(void*, Args... a) {
+        if constexpr (std::is_void_v<R>) { std::invoke(Method, Instance, std::forward<Args>(a)...); return; }
+        else { return std::invoke(Method, Instance, std::forward<Args>(a)...); }
     }
 };
 
@@ -769,6 +817,36 @@ public:
     template <auto Method, class T, std::enable_if_t<!std::is_lvalue_reference_v<T&&>, int> = 0>
     static constexpr delegate bind(T&&) = delete;
 
+    /** Compile-time free-function binding; the payload stays unused. */
+    template <auto Function,
+              std::enable_if_t<std::is_pointer_v<decltype(Function)>
+                               && std::is_function_v<std::remove_pointer_t<decltype(Function)>>,
+                               int> = 0>
+    static delegate bind() noexcept {
+        static_assert(Function != nullptr,
+                      "tiny::delegate::bind: function cannot be null.");
+        static_assert(std::is_invocable_r_v<R, decltype(Function), Args...>,
+                      "tiny::delegate::bind: signature mismatch (args/return).");
+        delegate d;
+        d.invoke_ = &invoke_function_static_<Function>;
+        d.mgr_ = &mgr_ref_();
+        return d;
+    }
+
+    /** Compile-time instance binding (object with static storage/linkage). */
+    template <auto Method, auto& Instance>
+    static delegate bind() noexcept {
+        static_assert(std::is_member_function_pointer_v<decltype(Method)>,
+                      "tiny::delegate::bind: Method must be a member function pointer.");
+        static_assert(std::is_invocable_r_v<R, decltype(Method),
+                                            decltype(Instance), Args...>,
+                      "tiny::delegate::bind: signature mismatch (args/return).");
+        delegate d;
+        d.invoke_ = &invoke_method_static_<Method, Instance>;
+        d.mgr_ = &mgr_ref_();
+        return d;
+    }
+
 private:
     struct manager {
         void (*destroy)(delegate&) noexcept;
@@ -829,6 +907,18 @@ private:
         const T& self = *static_cast<const T*>(c);
         if constexpr (std::is_void_v<R>) { std::invoke(Method, self, std::forward<Args>(a)...); return; }
         else { return std::invoke(Method, self, std::forward<Args>(a)...); }
+    }
+
+    template <auto Function>
+    static R invoke_function_static_(void*, Args... a) {
+        if constexpr (std::is_void_v<R>) { Function(std::forward<Args>(a)...); return; }
+        else { return Function(std::forward<Args>(a)...); }
+    }
+
+    template <auto Method, auto& Instance>
+    static R invoke_method_static_(void*, Args... a) {
+        if constexpr (std::is_void_v<R>) { std::invoke(Method, Instance, std::forward<Args>(a)...); return; }
+        else { return std::invoke(Method, Instance, std::forward<Args>(a)...); }
     }
 
     static const manager& mgr_ref_() noexcept {

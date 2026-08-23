@@ -32,7 +32,9 @@ It is aimed at projects that want a small, explicit, predictable callback abstra
 - Small-buffer optimization with a platform-scaled default capacity
   (four machine words: 16 bytes on a 32-bit MCU, 32 on a 64-bit host)
 - Optional heap fallback
-- Explicit `borrow` and `bind` APIs
+- Explicit `borrow` and `bind` APIs, including compile-time bindings
+  (`bind<&fn>()`, `bind<&T::method, Instance>()`) for constexpr delegate
+  tables in flash
 - Safe-call helpers on every type: `call_if(args...)` (bool for void
   signatures, `std::optional<R>` otherwise) and
   `call_or(fallback, args...)` — for callbacks whose empty state is legal
@@ -160,10 +162,12 @@ and traps deterministically — and `#define TINY_DELEGATE_ASSERT(e, m)
 
 `tiny_delegate` provides the same safe-call ergonomics as
 `etl::delegate` — `call_if(args...)` returning bool/`std::optional<R>` and
-`call_or(fallback, args...)` — on all three types, so the non-owning
-feature sets now match (the one exception: ETL's compile-time *instance*
-binding `create<T, Obj, &T::method>()`, which a captureless lambda
-`[]{ Obj.method(); }` reproduces in one line).
+`call_or(fallback, args...)` — and the same compile-time bindings:
+`bind<&freeFunction>()` and `bind<&T::method, Instance>()` bake the target
+into the generated invoker, so `delegate_ref` tables are fully
+constexpr-constructible and live in flash (verified: a 3-entry table lands
+in `.rodata`, 8 bytes per entry, zero RAM). The non-owning feature sets
+now match completely.
 
 What `etl::delegate` does not have at all is the owning tier:
 `tiny_delegate` adds
