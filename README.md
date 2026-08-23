@@ -178,6 +178,29 @@ Other libraries may be better if you need:
 Its strength is not "maximum feature count".
 Its strength is clarity, predictability, and a very good ownership model for real systems code.
 
+## Performance vs std::function
+
+Measured, not estimated (GCC -O2; call numbers are the best of 5 runs of
+100M calls; assignment is 10M iterations; ARM numbers from
+arm-none-eabi-g++ -Os for Cortex-M4):
+
+|  | tiny_delegate | std::function |
+| --- | --- | --- |
+| call speed (x64 host) | 0.93 ns | 0.94 ns |
+| call path (Cortex-M4) | **6 instructions, no stack frame, tail `bx`** | 13+ instructions, stack frame, argument spilled and passed by pointer |
+| assign small lambda (16 B) | **0.94 ns** | 3.0 ns |
+| assign big lambda (48 B) | **0.96 ns, inline** | 21.4 ns, **heap allocation each time** |
+| `delegate_ref` object size | **8 B** ARM32 / 16 B x64 | 16 B / 32 B |
+| store+call code size (Cortex-M4, -Os) | 112–218 B | 306 B + unwinder/exception tables |
+| link-time dependencies | none | `__throw_bad_function_call`, unwinder |
+
+The call path is two loads, a predictable null check, and a tail jump —
+the invoker receives the payload pointer directly, exactly one
+indirection, and the empty-check branch is laid out cold via
+`TINY_DELEGATE_UNLIKELY`. Assignment never touches the heap unless the
+application explicitly enabled the fallback, so its cost is constant and
+deterministic — the property that matters on an MCU.
+
 ## Consuming the library
 
 The library is a single header: nothing is compiled or linked, a consumer

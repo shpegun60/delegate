@@ -58,13 +58,20 @@
 #define TINY_DELEGATE_ENABLE_HEAP_FALLBACK 0
 #endif
 
+// Branch-layout hint so the fail-closed guard stays off the hot path.
+#if defined(__GNUC__) || defined(__clang__)
+#define TINY_DELEGATE_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define TINY_DELEGATE_UNLIKELY(x) (x)
+#endif
+
 // Fail-closed default: a violated guard traps deterministically instead of
 // continuing into undefined behavior (e.g. an indirect call through null).
 // Override to integrate a project assert/log policy, or define as ((void)0)
 // to remove every check.
 #ifndef TINY_DELEGATE_ASSERT
 #define TINY_DELEGATE_ASSERT(expr, msg) \
-    do { if (!(expr)) { ::tiny::detail::trap(); } } while (false)
+    do { if (TINY_DELEGATE_UNLIKELY(!(expr))) { ::tiny::detail::trap(); } } while (false)
 #endif
 
 namespace tiny {
@@ -202,7 +209,9 @@ class delegate_ref<R(Args...)> {
 public:
     using signature = R(Args...);
     using fnptr_t   = R (*)(Args...);
-    using invoke_t  = R (*)(const delegate_ref&, Args...);
+    // The invoker receives the payload pointer directly (single indirection,
+    // like the owning delegates), not a reference back to the delegate.
+    using invoke_t  = R (*)(void*, Args...);
 
     constexpr delegate_ref() noexcept = default;
     constexpr delegate_ref(std::nullptr_t) noexcept {}
@@ -210,13 +219,16 @@ public:
 
     delegate_ref(fnptr_t fp) { *this = fp; }
     delegate_ref& operator=(fnptr_t fp) {
+        // Storing a function pointer in void* is conditionally-supported but
+        // universal on every mainstream ABI; the size check keeps it honest.
+        static_assert(sizeof(fnptr_t) == sizeof(void*),
+                      "tiny::delegate_ref: function pointer must fit in void*");
         TINY_DELEGATE_ASSERT(fp, "tiny::delegate_ref: null function pointer");
         if (!fp) {
             reset();
             return *this;
         }
-        fp_ = fp;
-        obj_ = nullptr;
+        payload_ = reinterpret_cast<void*>(fp);
         invoke_ = &invoke_fnptr_;
         return *this;
     }
@@ -228,8 +240,7 @@ public:
     delegate_ref& operator=(borrow_t<F> br) {
         static_assert(std::is_invocable_r_v<R, F&, Args...>, "tiny::delegate_ref::borrow: signature mismatch.");
         TINY_DELEGATE_ASSERT(br.p, "tiny::delegate_ref::borrow: null pointer");
-        fp_ = nullptr;
-        obj_ = detail::erase_ptr(br.p);
+        payload_ = detail::erase_ptr(br.p);
         invoke_ = &invoke_functor_ref_<F>;
         return *this;
     }
@@ -242,8 +253,7 @@ public:
                       "tiny::delegate_ref::bind: signature mismatch (args/return).");
 
         delegate_ref d;
-        d.fp_ = nullptr;
-        d.obj_ = detail::erase_ptr(std::addressof(obj));
+        d.payload_ = detail::erase_ptr(std::addressof(obj));
         d.invoke_ = &invoke_method_ref_<Method, T>;
         return d;
     }
@@ -256,8 +266,7 @@ public:
                       "tiny::delegate_ref::bind: signature mismatch (const args/return).");
 
         delegate_ref d;
-        d.fp_ = nullptr;
-        d.obj_ = detail::erase_ptr(std::addressof(obj));
+        d.payload_ = detail::erase_ptr(std::addressof(obj));
         d.invoke_ = &invoke_method_ref_const_<Method, T>;
         return d;
     }
@@ -266,8 +275,7 @@ public:
     static constexpr delegate_ref bind(T&&) = delete;
 
     constexpr void reset() noexcept {
-        fp_ = nullptr;
-        obj_ = nullptr;
+        payload_ = nullptr;
         invoke_ = nullptr;
     }
 
@@ -275,37 +283,36 @@ public:
 
     R operator()(Args... args) const {
         TINY_DELEGATE_ASSERT(invoke_, "tiny::delegate_ref: call on empty");
-        return invoke_(*this, std::forward<Args>(args)...);
+        return invoke_(payload_, std::forward<Args>(args)...);
     }
 
 private:
-    fnptr_t   fp_     = nullptr;
-    void*     obj_    = nullptr;
-    invoke_t  invoke_ = nullptr;
+    void*     payload_ = nullptr;
+    invoke_t  invoke_  = nullptr;
 
-    static R invoke_fnptr_(const delegate_ref& self, Args... a) {
-        auto fp = self.fp_;
+    static R invoke_fnptr_(void* p, Args... a) {
+        auto fp = reinterpret_cast<fnptr_t>(p);
         if constexpr (std::is_void_v<R>) { fp(std::forward<Args>(a)...); return; }
         else { return fp(std::forward<Args>(a)...); }
     }
 
     template <class F>
-    static R invoke_functor_ref_(const delegate_ref& self, Args... a) {
-        F& fn = *static_cast<F*>(self.obj_);
+    static R invoke_functor_ref_(void* p, Args... a) {
+        F& fn = *static_cast<F*>(p);
         if constexpr (std::is_void_v<R>) { std::invoke(fn, std::forward<Args>(a)...); return; }
         else { return std::invoke(fn, std::forward<Args>(a)...); }
     }
 
     template <auto Method, class T>
-    static R invoke_method_ref_(const delegate_ref& self, Args... a) {
-        T& o = *static_cast<T*>(self.obj_);
+    static R invoke_method_ref_(void* p, Args... a) {
+        T& o = *static_cast<T*>(p);
         if constexpr (std::is_void_v<R>) { std::invoke(Method, o, std::forward<Args>(a)...); return; }
         else { return std::invoke(Method, o, std::forward<Args>(a)...); }
     }
 
     template <auto Method, class T>
-    static R invoke_method_ref_const_(const delegate_ref& self, Args... a) {
-        const T& o = *static_cast<const T*>(self.obj_);
+    static R invoke_method_ref_const_(void* p, Args... a) {
+        const T& o = *static_cast<const T*>(p);
         if constexpr (std::is_void_v<R>) { std::invoke(Method, o, std::forward<Args>(a)...); return; }
         else { return std::invoke(Method, o, std::forward<Args>(a)...); }
     }
