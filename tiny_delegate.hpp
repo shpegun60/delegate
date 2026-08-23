@@ -517,11 +517,17 @@ private:
 
         constexpr std::size_t need_size  = sizeof(DF);
         constexpr std::size_t need_align = alignof(DF);
+        // Inline placement needs BOTH the fit and a nothrow move (delegate
+        // moves relocate the payload). Heap placement needs neither: its
+        // move is a pointer handoff. So a callable that fits but has a
+        // potentially-throwing move goes to the heap when the fallback is
+        // enabled, and is rejected with a precise message otherwise.
+        constexpr bool fits_storage =
+            need_size <= InlineBytes && need_align <= InlineAlign;
+        constexpr bool inline_ok =
+            fits_storage && std::is_nothrow_move_constructible_v<DF>;
 
-        if constexpr (need_size <= InlineBytes && need_align <= InlineAlign) {
-            static_assert(std::is_nothrow_move_constructible_v<DF>,
-                          "tiny::delegate_sbo: an inline-stored callable must be "
-                          "nothrow-move-constructible so delegate moves are noexcept.");
+        if constexpr (inline_ok) {
             ::new (inline_ptr_()) DF(std::forward<F>(f));
             ctx_ = inline_ptr_();
             invoke_ = &invoke_obj_<DF>;
@@ -533,7 +539,15 @@ private:
             invoke_ = &invoke_obj_<DF>;
             mgr_ = &mgr_heap_<DF>();
 #else
-            detail::fail_delegate_does_not_fit<DF, need_size, InlineBytes, need_align, InlineAlign>();
+            if constexpr (!fits_storage) {
+                detail::fail_delegate_does_not_fit<DF, need_size, InlineBytes, need_align, InlineAlign>();
+            } else {
+                static_assert(std::is_nothrow_move_constructible_v<DF>,
+                              "tiny::delegate_sbo: an inline-stored callable must be "
+                              "nothrow-move-constructible so delegate moves are noexcept. "
+                              "Mark its move/copy constructor noexcept, or enable "
+                              "TINY_DELEGATE_ENABLE_HEAP_FALLBACK to store it on the heap.");
+            }
 #endif
         }
     }
@@ -837,11 +851,15 @@ private:
 
         constexpr std::size_t need_size  = sizeof(DF);
         constexpr std::size_t need_align = alignof(DF);
+        // Inline placement needs BOTH the fit and a nothrow move; heap
+        // placement needs neither (its move is a pointer handoff). See the
+        // identical logic in delegate_sbo::assign_callable_.
+        constexpr bool fits_storage =
+            need_size <= InlineBytes && need_align <= InlineAlign;
+        constexpr bool inline_ok =
+            fits_storage && std::is_nothrow_move_constructible_v<DF>;
 
-        if constexpr (need_size <= InlineBytes && need_align <= InlineAlign) {
-            static_assert(std::is_nothrow_move_constructible_v<DF>,
-                          "tiny::delegate: an inline-stored callable must be "
-                          "nothrow-move-constructible so delegate moves are noexcept.");
+        if constexpr (inline_ok) {
             ::new (inline_ptr_()) DF(std::forward<F>(f));
             ctx_ = inline_ptr_();
             invoke_ = &invoke_obj_<DF>;
@@ -853,7 +871,15 @@ private:
             invoke_ = &invoke_obj_<DF>;
             mgr_ = &mgr_heap_<DF>();
 #else
-            detail::fail_delegate_does_not_fit<DF, need_size, InlineBytes, need_align, InlineAlign>();
+            if constexpr (!fits_storage) {
+                detail::fail_delegate_does_not_fit<DF, need_size, InlineBytes, need_align, InlineAlign>();
+            } else {
+                static_assert(std::is_nothrow_move_constructible_v<DF>,
+                              "tiny::delegate: an inline-stored callable must be "
+                              "nothrow-move-constructible so delegate moves are noexcept. "
+                              "Mark its move/copy constructor noexcept, or enable "
+                              "TINY_DELEGATE_ENABLE_HEAP_FALLBACK to store it on the heap.");
+            }
 #endif
         }
     }

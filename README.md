@@ -19,8 +19,11 @@ It is aimed at projects that want a small, explicit, predictable callback abstra
 
 - C++17/C++20 compatible
 - No exceptions required by design; delegate moves and destruction are
-  unconditionally `noexcept` (stored callables must be nothrow-movable and
-  nothrow-destructible, enforced at compile time)
+  unconditionally `noexcept`. Inline-stored callables must be
+  nothrow-move-constructible (enforced at compile time with a message that
+  names the fix); with the heap fallback enabled, a callable whose move may
+  throw is stored on the heap instead — its handoff move needs no payload
+  move at all. Everything stored must be nothrow-destructible.
 - Fail-closed runtime guards: calling an empty delegate or assigning a null
   function pointer traps deterministically by default; the policy is fully
   overridable through `TINY_DELEGATE_ASSERT`

@@ -119,6 +119,36 @@ int main()
     }
     assert(g_news == g_deletes);                  // aligned delete matched
 
+    // ---- A small callable whose move may throw fits the buffer but must
+    //      NOT be stored inline (delegate moves are noexcept). With the
+    //      fallback enabled it goes to the heap, exactly like std::function
+    //      would — but visibly, via uses_heap(). ----
+    {
+        const int base_news = g_news;
+        struct ThrowingMove {
+            void* p = nullptr;
+            ThrowingMove() = default;
+            ThrowingMove(const ThrowingMove& o) : p(o.p) {}   // not noexcept
+            int operator()() const { return 7; }
+        };
+        static_assert(sizeof(ThrowingMove) <= 32, "fits the buffer by size");
+
+        tiny::delegate_sbo<int(), 32> d{ThrowingMove{}};
+        assert(d.uses_heap() && !d.uses_inline());            // rerouted
+        assert(g_news == base_news + 1);
+        assert(d() == 7);
+
+        tiny::delegate_sbo<int(), 32> d2{static_cast<
+            tiny::delegate_sbo<int(), 32>&&>(d)};             // ptr handoff
+        assert(g_news == base_news + 1);
+        assert(d2() == 7);
+
+        tiny::delegate<int(), 32> h{ThrowingMove{}};          // hybrid too
+        assert(h.uses_heap() && h() == 7);
+        assert(g_news == base_news + 2);
+    }
+    assert(g_news == g_deletes);
+
     std::printf("heap: news=%d deletes=%d\n", g_news, g_deletes);
     std::puts("PARANOID DELEGATE SUITE (heap-fallback build): ALL OK");
     return 0;
