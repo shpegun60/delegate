@@ -60,10 +60,12 @@
 #endif
 
 // Branch-layout hint so the fail-closed guard stays off the hot path.
+#ifndef TINY_DELEGATE_UNLIKELY
 #if defined(__GNUC__) || defined(__clang__)
 #define TINY_DELEGATE_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #else
 #define TINY_DELEGATE_UNLIKELY(x) (x)
+#endif
 #endif
 
 // Fail-closed default: a violated guard traps deterministically instead of
@@ -326,6 +328,9 @@ public:
     // Safe-call: empty is a legal state here, not a violation. Returns bool
     // (called or not) for void signatures, std::optional<R> otherwise.
     auto call_if(Args... args) const {
+        static_assert(!std::is_reference_v<R>,
+                      "tiny::delegate_ref::call_if: std::optional cannot hold a "
+                      "reference result; use operator() or call_or instead.");
         if constexpr (std::is_void_v<R>) {
             if (!invoke_) return false;
             invoke_(payload_, std::forward<Args>(args)...);
@@ -342,6 +347,11 @@ public:
     R call_or(Alternative&& alternative, Args... args) const {
         static_assert(std::is_invocable_r_v<R, Alternative, Args...>,
                       "tiny::delegate_ref::call_or: alternative signature mismatch.");
+        if constexpr (std::is_pointer_v<std::decay_t<Alternative>>
+                      || std::is_member_pointer_v<std::decay_t<Alternative>>) {
+            TINY_DELEGATE_ASSERT(alternative != nullptr,
+                                 "tiny::delegate_ref::call_or: null fallback");
+        }
         if (invoke_) {
             return invoke_(payload_, std::forward<Args>(args)...);
         }
@@ -467,6 +477,9 @@ public:
     // Safe-call: empty is a legal state here, not a violation. Returns bool
     // (called or not) for void signatures, std::optional<R> otherwise.
     auto call_if(Args... args) const {
+        static_assert(!std::is_reference_v<R>,
+                      "tiny::delegate_sbo::call_if: std::optional cannot hold a "
+                      "reference result; use operator() or call_or instead.");
         if constexpr (std::is_void_v<R>) {
             if (!invoke_) return false;
             invoke_(ctx_, std::forward<Args>(args)...);
@@ -483,6 +496,11 @@ public:
     R call_or(Alternative&& alternative, Args... args) const {
         static_assert(std::is_invocable_r_v<R, Alternative, Args...>,
                       "tiny::delegate_sbo::call_or: alternative signature mismatch.");
+        if constexpr (std::is_pointer_v<std::decay_t<Alternative>>
+                      || std::is_member_pointer_v<std::decay_t<Alternative>>) {
+            TINY_DELEGATE_ASSERT(alternative != nullptr,
+                                 "tiny::delegate_sbo::call_or: null fallback");
+        }
         if (invoke_) {
             return invoke_(ctx_, std::forward<Args>(args)...);
         }
@@ -732,6 +750,9 @@ public:
     // Safe-call: empty is a legal state here, not a violation. Returns bool
     // (called or not) for void signatures, std::optional<R> otherwise.
     auto call_if(Args... args) const {
+        static_assert(!std::is_reference_v<R>,
+                      "tiny::delegate::call_if: std::optional cannot hold a "
+                      "reference result; use operator() or call_or instead.");
         if constexpr (std::is_void_v<R>) {
             if (!invoke_) return false;
             invoke_(ctx_, std::forward<Args>(args)...);
@@ -748,6 +769,11 @@ public:
     R call_or(Alternative&& alternative, Args... args) const {
         static_assert(std::is_invocable_r_v<R, Alternative, Args...>,
                       "tiny::delegate::call_or: alternative signature mismatch.");
+        if constexpr (std::is_pointer_v<std::decay_t<Alternative>>
+                      || std::is_member_pointer_v<std::decay_t<Alternative>>) {
+            TINY_DELEGATE_ASSERT(alternative != nullptr,
+                                 "tiny::delegate::call_or: null fallback");
+        }
         if (invoke_) {
             return invoke_(ctx_, std::forward<Args>(args)...);
         }
@@ -1158,7 +1184,10 @@ inline constexpr void delegate_ref_sanity() {
     static_assert(std::is_move_assignable_v<D>, "delegate_ref must be move-assignable.");
 
     static_assert(alignof(D) >= alignof(void*), "delegate_ref alignment too small.");
-    static_assert(sizeof(D) >= sizeof(void*) + sizeof(typename D::invoke_t), "delegate_ref too small (layout bug?).");
+    // Pinned exact layout: one payload pointer plus one invoker pointer.
+    // A regression that grows delegate_ref past two words must fail here.
+    static_assert(sizeof(D) == sizeof(void*) + sizeof(typename D::invoke_t),
+                  "delegate_ref must stay exactly two pointers.");
     static_assert(sizeof(D) <= ref_budget_bytes<D>(), "delegate_ref ABI budget exceeded (unexpected bloat).");
 }
 

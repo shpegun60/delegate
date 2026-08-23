@@ -5,11 +5,12 @@
 #  - lenient_tests:  custom TINY_DELEGATE_ASSERT override (counting, no trap)
 
 add_executable(core_tests core_tests.cpp)
+add_executable(edge_tests edge_tests.cpp)
 add_executable(cross_tu_tests cross_tu_impl.cpp cross_tu_tests.cpp)
 add_executable(heap_tests heap_tests.cpp)
 add_executable(lenient_tests lenient_tests.cpp)
 
-foreach(t core_tests cross_tu_tests heap_tests lenient_tests)
+foreach(t core_tests edge_tests cross_tu_tests heap_tests lenient_tests)
     target_link_libraries(${t} PRIVATE tiny_delegate::tiny_delegate)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${t} PRIVATE -Wall -Wextra -Wpedantic
