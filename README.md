@@ -138,10 +138,28 @@ If you want a smaller, more focused delegate library with very explicit semantic
 
 ETL-style delegates are often very good for embedded work, especially when you want non-owning callback references.
 
-`tiny_delegate` adds a useful extra layer:
+Measured head-to-head against `etl::delegate` (ETL 20.x, same harness as
+the std::function numbers):
 
-- a dedicated non-owning type
-- a dedicated owning type
+| | `etl::delegate` | `tiny::delegate_ref` |
+| --- | --- | --- |
+| size (ARM32 / x64) | 8 / 16 B | 8 / 16 B |
+| call speed (x64) | 0.94 ns | 0.94 ns |
+| call path (Cortex-M4) | 3 instructions, **no empty check** | 5 instructions incl. guard |
+| calling an empty delegate | **segfault / HardFault** (measured SIGSEGV with the default config) | deterministic trap |
+| temporaries | rejected | rejected |
+
+So in the non-owning niche the two are equals, with one philosophical
+difference: `etl::delegate` spends zero instructions on the empty check
+and crashes uncontrolled when misused; `tiny::delegate_ref` spends two
+and traps deterministically — and `#define TINY_DELEGATE_ASSERT(e, m)
+((void)0)` buys the ETL behavior back if those two instructions matter.
+
+What `etl::delegate` does not have at all is the owning tier:
+`tiny_delegate` adds
+
+- a dedicated owning type with SBO (`delegate_sbo`) — capturing lambdas
+  and move-only functors stored inside the delegate, temporaries welcome
 - a hybrid type that can choose automatically
 - compile-time size/alignment fit tooling for owned callables
 
