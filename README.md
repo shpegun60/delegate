@@ -187,15 +187,41 @@ Measured, not estimated (GCC -O2; call numbers are the best of 5 runs of
 100M calls; assignment is 10M iterations; ARM numbers from
 arm-none-eabi-g++ -Os for Cortex-M4):
 
-|  | tiny_delegate | std::function |
+### Object sizes (RAM per stored callback)
+
+| Type | ARM32 (Cortex-M) | x64 host |
 | --- | --- | --- |
-| call speed (x64 host) | 0.93 ns | 0.94 ns |
-| call path (Cortex-M4) | **6 instructions, no stack frame, tail `bx`** | 13+ instructions, stack frame, argument spilled and passed by pointer |
-| assign small lambda (16 B) | **0.94 ns** | 3.0 ns |
-| assign big lambda (48 B) | **0.96 ns, inline** | 21.4 ns, **heap allocation each time** |
-| `delegate_ref` object size | **8 B** ARM32 / 16 B x64 | 16 B / 32 B |
-| store+call code size (Cortex-M4, -Os) | 112–218 B | 306 B + unwinder/exception tables |
-| link-time dependencies | none | `__throw_bad_function_call`, unwinder |
+| raw function pointer + `void*` context | 8 B | 16 B |
+| `tiny::delegate_ref` | **8 B** | **16 B** |
+| `tiny::delegate_sbo<Sig, 16, 4>` | 28 B | — |
+| `tiny::delegate` (platform default SBO) | 32 B | 64 B |
+| `std::function` | 16 B | 32 B |
+
+`std::function` looks smaller than the owning delegates until a real
+capture arrives: its internal buffer holds only ~8–16 B (libstdc++) and
+anything else becomes the 16/32 B object **plus a heap block plus
+allocator overhead** — while the delegate stays flat, with the capacity
+you chose. `delegate_ref` matches a raw pointer pair exactly.
+
+### Call and assignment speed (x64, GCC -O2)
+
+| Operation | direct lambda | tiny_delegate | std::function |
+| --- | --- | --- | --- |
+| call | 0.25 ns | 0.93 ns (`ref` and owning alike) | 0.94 ns |
+| assign small lambda (16 B capture) | — | **0.94 ns** | 3.0 ns |
+| assign big lambda (48 B capture) | — | **0.96 ns, inline** | 21.4 ns, **heap allocation each time** |
+
+Assignment is the axis that matters: constant-time and heap-free for the
+delegate at any capture size, versus an `operator new` per assignment
+once `std::function`'s tiny buffer overflows.
+
+### Code size and dependencies (Cortex-M4, -Os, store + call one lambda)
+
+| | tiny_delegate | std::function |
+| --- | --- | --- |
+| call path | **6 instructions, no stack frame, tail `bx`** | 13+ instructions, stack frame, argument spilled and passed by pointer |
+| flash per use site | 112 B (`delegate_ref`) / 218 B (owning) | 306 B |
+| link-time dependencies | none | `__throw_bad_function_call`, unwinder + exception tables |
 
 The call path is two loads, a predictable null check, and a tail jump —
 the invoker receives the payload pointer directly, exactly one
