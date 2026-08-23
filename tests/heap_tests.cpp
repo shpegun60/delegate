@@ -11,6 +11,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <utility>
@@ -66,6 +67,58 @@ int main()
         assert(g_deletes == 2);
     }
     assert(g_news == g_deletes);    // perfect balance, no leaks
+
+    // ---- The hybrid tiny::delegate has its own (parallel) heap manager;
+    //      it must obey exactly the same accounting. ----
+    {
+        const int base_news = g_news;
+        const int base_deletes = g_deletes;
+        using H = tiny::delegate<int(), 32>;
+
+        H h{Big{9}};                              // oversized -> heap
+        assert(h.uses_heap() && h.owning() && !h.uses_inline());
+        assert(g_news == base_news + 1);
+        assert(h() == 9);
+
+        // Heap payload moved INTO an engaged inline delegate: the inline
+        // payload is destroyed, the pointer is handed off, nothing leaks.
+        H inline_one{[] { return 5; }};
+        assert(inline_one.uses_inline());
+        inline_one = static_cast<H&&>(h);
+        assert(!h && inline_one.uses_heap() && inline_one() == 9);
+        assert(g_news == base_news + 1);          // no extra allocation
+
+        // Ref mode never allocates, even in the fallback build.
+        auto fn = [] { return 11; };
+        H ref{tiny::borrow(fn)};
+        assert(ref.non_owning() && !ref.uses_heap());
+        assert(g_news == base_news + 1);
+
+        // Reassigning heap -> inline frees the heap block.
+        inline_one = [] { return 6; };
+        assert(inline_one.uses_inline());
+        assert(g_deletes == base_deletes + 1);
+        assert(inline_one() == 6);
+    }
+    assert(g_news == g_deletes);
+
+    // ---- Over-aligned oversized callable: C++17 aligned new must hold. ----
+    {
+        struct alignas(64) BigAligned {
+            char blob[128];
+            std::uintptr_t operator()() const {
+                return reinterpret_cast<std::uintptr_t>(this);
+            }
+        };
+        tiny::delegate_sbo<std::uintptr_t(), 32> d{BigAligned{}};
+        assert(d.uses_heap());
+        assert(d() % 64u == 0u);                  // heap block respects alignas
+        tiny::delegate_sbo<std::uintptr_t(), 32> d2{static_cast<
+            tiny::delegate_sbo<std::uintptr_t(), 32>&&>(d)};
+        assert(d2() % 64u == 0u);                 // and survives a move
+    }
+    assert(g_news == g_deletes);                  // aligned delete matched
+
     std::printf("heap: news=%d deletes=%d\n", g_news, g_deletes);
     std::puts("PARANOID DELEGATE SUITE (heap-fallback build): ALL OK");
     return 0;
