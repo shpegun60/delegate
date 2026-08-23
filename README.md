@@ -453,6 +453,31 @@ minimum of 16):
 Use `delegate64<Sig>` / `delegate<Sig, N>` when a bigger inline buffer is
 intended.
 
+**The capacity is part of the type — configure it consistently.**
+`tiny::delegate<void()>` compiled with `TINY_DELEGATE_DEFAULT_BYTES 64` and
+the same spelling compiled with the default are two *different types* with
+different mangled names. Mixing them across translation units fails loudly
+at link time (`undefined reference`) — never silently — but the rules that
+avoid the failure are simple:
+
+1. **Never define the macro per-file.** Set it once for the whole project
+   in the build system, so every TU agrees:
+   `add_compile_definitions(TINY_DELEGATE_DEFAULT_BYTES=32)` (CMake) or
+   `DEFINES += TINY_DELEGATE_DEFAULT_BYTES=32` (qmake).
+2. **Across API boundaries, don't rely on the default at all.** Spell the
+   size explicitly in public signatures, or define one project-wide alias
+   and use it everywhere:
+
+   ```cpp
+   // app_delegate.h
+   template <class Sig>
+   using AppDelegate = tiny::delegate<Sig, 32, 8>;  // explicit, macro-proof
+   ```
+3. To check whether a callable fits before committing to a size, use the
+   built-in tooling: `fits_inline<T>()`, `required_inline_bytes<T>()`, and
+   `static_assert_fits_inline<T>()`. An oversized callable is a compile
+   error with the needed/available sizes in the message.
+
 ### `TINY_DELEGATE_DEFAULT_ALIGN`
 
 Default inline alignment used by `tiny::delegate<Sig>`.
