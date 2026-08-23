@@ -15,14 +15,20 @@ It is aimed at projects that want a small, explicit, predictable callback abstra
 ## Features
 
 - C++17/C++20 compatible
-- No exceptions required by design
-- No built-in assert policy forced on the user
+- No exceptions required by design; delegate moves and destruction are
+  unconditionally `noexcept` (stored callables must be nothrow-movable and
+  nothrow-destructible, enforced at compile time)
+- Fail-closed runtime guards: calling an empty delegate or assigning a null
+  function pointer traps deterministically by default; the policy is fully
+  overridable through `TINY_DELEGATE_ASSERT`
 - Move-only owning delegates
 - Non-owning ref delegate
-- Small-buffer optimization
+- Small-buffer optimization with a platform-scaled default capacity
+  (four machine words: 16 bytes on a 32-bit MCU, 32 on a 64-bit host)
 - Optional heap fallback
 - Explicit `borrow` and `bind` APIs
-- Compile-time fit checks for size and alignment
+- Compile-time fit checks for size and alignment; non-callable arguments are
+  rejected at overload resolution (SFINAE-constrained constructors)
 - Works with move-only callables
 
 ## Why tiny_delegate?
@@ -373,11 +379,16 @@ Default inline byte capacity used by:
 - `tiny::delegate<Sig>`
 - free `tiny::bind<&T::method>(obj)` helper
 
-Default:
+Default (platform-scaled — four machine words, never below the layout
+minimum of 16):
 
 ```cpp
-64
+((4u * sizeof(void*)) < 16u ? 16u : (4u * sizeof(void*)))
+// 16 bytes on a 32-bit MCU, 32 bytes on a 64-bit host
 ```
+
+Use `delegate64<Sig>` / `delegate<Sig, N>` when a bigger inline buffer is
+intended.
 
 ### `TINY_DELEGATE_DEFAULT_ALIGN`
 
@@ -404,19 +415,30 @@ Default:
 
 ### `TINY_DELEGATE_ASSERT(expr, msg)`
 
-User hook for runtime assertions.
+User hook for runtime assertions. It guards every unsafe entry point:
+calling an empty delegate and assigning a null function pointer.
 
-Default:
+Default (fail-closed): a violated guard traps deterministically —
+`__builtin_trap()` on GCC/Clang (a single `udf` instruction on ARM),
+`std::abort()` elsewhere — instead of continuing into undefined behavior
+such as an indirect call through a null pointer.
 
 ```cpp
-#define TINY_DELEGATE_ASSERT(expr, msg) ((void)0)
+// effective default
+#define TINY_DELEGATE_ASSERT(expr, msg) \
+    do { if (!(expr)) { ::tiny::detail::trap(); } } while (false)
 ```
 
-Example:
+Override examples:
 
 ```cpp
+// integrate a project assert
 #include <cassert>
 #define TINY_DELEGATE_ASSERT(expr, msg) assert((expr) && (msg))
+#include "tiny_delegate.hpp"
+
+// or restore the old fully unchecked behavior
+#define TINY_DELEGATE_ASSERT(expr, msg) ((void)0)
 #include "tiny_delegate.hpp"
 ```
 
@@ -510,7 +532,9 @@ The same idea works for:
 - `tiny::delegate_sbo<Sig, ...>`
 - `tiny::delegate<Sig, ...>`
 
-Calling an empty delegate is only guarded by `TINY_DELEGATE_ASSERT`, so if your project wants hard failure on misuse, override that macro.
+Calling an empty delegate is guarded by `TINY_DELEGATE_ASSERT`, which traps
+deterministically by default (hard failure, no undefined behavior). Override
+the macro to log, assert, or — explicitly — remove the check.
 
 ### Copy and move rules
 

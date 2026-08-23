@@ -1,10 +1,16 @@
+// tiny_delegate — compact C++17/C++20 embedded callback library
+// https://github.com/shpegun60/delegate
+//
+// Authors: shpegun60 + Claude (Anthropic)
+// SPDX-License-Identifier: MIT
 #pragma once
 
 // English comments.
 //
 // tiny_delegate.hpp
 // - C++17/C++20 compatible
-// - No exceptions required (but not enforced here)
+// - No exceptions required; stored callables must be nothrow-movable and
+//   nothrow-destructible, so every move/reset/destroy path is noexcept
 // - Optional global default bytes/alignment and heap fallback toggle
 //
 // Main types:
@@ -21,16 +27,29 @@
 // Compile-time paranoia:
 //   fits_inline<T>(), required_inline_bytes<T>(), static_assert_fits_inline<T>()
 //   ABI sanity checks in tiny::ct
+//
+// Runtime paranoia policy:
+//   TINY_DELEGATE_ASSERT(expr, msg) guards every unsafe entry point (calling
+//   an empty delegate, assigning a null function pointer). The DEFAULT policy
+//   traps deterministically (__builtin_trap / std::abort) instead of jumping
+//   through a null pointer. Define TINY_DELEGATE_ASSERT yourself to log,
+//   count, or no-op ((void)0 restores the old unchecked behavior).
 
 #include <cstddef>
+#include <cstdlib>    // std::abort (non-GNU trap fallback)
 #include <type_traits>
 #include <utility>
 #include <new>
 #include <functional> // std::invoke
 #include <memory>     // std::addressof
 
+// Default inline capacity scales with the platform word instead of a fixed
+// host-sized 64 bytes: four pointers' worth, but never below the layout
+// minimum of 16. On a 32-bit MCU that is 16 bytes; on a 64-bit host, 32.
+// Use delegate64/delegate<Sig, N> when a bigger buffer is intended.
 #ifndef TINY_DELEGATE_DEFAULT_BYTES
-#define TINY_DELEGATE_DEFAULT_BYTES 64
+#define TINY_DELEGATE_DEFAULT_BYTES \
+    ((4u * sizeof(void*)) < 16u ? 16u : (4u * sizeof(void*)))
 #endif
 #ifndef TINY_DELEGATE_DEFAULT_ALIGN
 #define TINY_DELEGATE_DEFAULT_ALIGN alignof(std::max_align_t)
@@ -38,8 +57,14 @@
 #ifndef TINY_DELEGATE_ENABLE_HEAP_FALLBACK
 #define TINY_DELEGATE_ENABLE_HEAP_FALLBACK 0
 #endif
+
+// Fail-closed default: a violated guard traps deterministically instead of
+// continuing into undefined behavior (e.g. an indirect call through null).
+// Override to integrate a project assert/log policy, or define as ((void)0)
+// to remove every check.
 #ifndef TINY_DELEGATE_ASSERT
-#define TINY_DELEGATE_ASSERT(expr, msg) ((void)0)
+#define TINY_DELEGATE_ASSERT(expr, msg) \
+    do { if (!(expr)) { ::tiny::detail::trap(); } } while (false)
 #endif
 
 namespace tiny {
@@ -110,6 +135,18 @@ template <class T>
 using sig_of_t = typename sig_of<T>::type;
 
 namespace detail {
+
+// Deterministic stop for a violated runtime guard. On GCC/Clang this is a
+// single trapping instruction (udf on ARM) and needs no library support;
+// elsewhere it degrades to std::abort. Never returns.
+[[noreturn]] inline void trap() noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_trap();
+#else
+    std::abort();
+#endif
+}
+
 template <class Fn, std::size_t NeedSize, std::size_t HaveSize, std::size_t NeedAlign, std::size_t HaveAlign>
 struct diag_delegate_does_not_fit;
 
@@ -316,8 +353,11 @@ public:
     delegate_sbo(const delegate_sbo&) = delete;
     delegate_sbo& operator=(const delegate_sbo&) = delete;
 
-    delegate_sbo(delegate_sbo&& other) { move_from_(other); }
-    delegate_sbo& operator=(delegate_sbo&& other) {
+    // Stored callables are statically required to be nothrow-movable and
+    // nothrow-destructible, so transfer and teardown are unconditionally
+    // noexcept: a type-erased move can never fail halfway.
+    delegate_sbo(delegate_sbo&& other) noexcept { move_from_(other); }
+    delegate_sbo& operator=(delegate_sbo&& other) noexcept {
         if (this != &other) { reset(); move_from_(other); }
         return *this;
     }
@@ -351,17 +391,26 @@ public:
         if (!fp) return *this;
         ::new (inline_ptr_()) fnptr_t(fp);
         ctx_ = inline_ptr_();
-        invoke_ = &invoke_fnptr_stored_;
+        invoke_ = &invoke_obj_<fnptr_t>;
         mgr_ = &mgr_inline_<fnptr_t>();
         return *this;
     }
 
+    // Constrained so overload resolution (and std::is_constructible /
+    // std::is_assignable) reject a non-matching callable instead of failing
+    // inside the body.
     template <class F, class DF = std::decay_t<F>,
-              std::enable_if_t<!std::is_same_v<DF, delegate_sbo>, int> = 0>
+              std::enable_if_t<!std::is_same_v<DF, delegate_sbo>
+                               && (std::is_invocable_r_v<R, DF&, Args...>
+                                   || std::is_convertible_v<DF, fnptr_t>),
+                               int> = 0>
     delegate_sbo(F&& f) { *this = std::forward<F>(f); }
 
     template <class F, class DF = std::decay_t<F>,
-              std::enable_if_t<!std::is_same_v<DF, delegate_sbo>, int> = 0>
+              std::enable_if_t<!std::is_same_v<DF, delegate_sbo>
+                               && (std::is_invocable_r_v<R, DF&, Args...>
+                                   || std::is_convertible_v<DF, fnptr_t>),
+                               int> = 0>
     delegate_sbo& operator=(F&& f) {
         reset();
         assign_callable_(std::forward<F>(f));
@@ -371,7 +420,7 @@ public:
 private:
     struct manager {
         void (*destroy)(delegate_sbo&) noexcept;
-        void (*move)(delegate_sbo& src, delegate_sbo& dst);
+        void (*move)(delegate_sbo& src, delegate_sbo& dst) noexcept;
         bool (*uses_heap)(const delegate_sbo&) noexcept;
     };
 
@@ -390,7 +439,7 @@ private:
         mgr_ = nullptr;
     }
 
-    void move_from_(delegate_sbo& other) {
+    void move_from_(delegate_sbo& other) noexcept {
         if (other.mgr_) {
             other.mgr_->move(other, *this);
             other.clear_();
@@ -409,12 +458,6 @@ private:
         else { return std::invoke(obj, std::forward<Args>(a)...); }
     }
 
-    static R invoke_fnptr_stored_(void* c, Args... a) {
-        auto fp = *std::launder(reinterpret_cast<fnptr_t*>(c));
-        if constexpr (std::is_void_v<R>) { fp(std::forward<Args>(a)...); return; }
-        else { return fp(std::forward<Args>(a)...); }
-    }
-
     template <class Obj>
     static const manager& mgr_inline_() noexcept {
         static const manager m{
@@ -422,7 +465,7 @@ private:
                 Obj& o = *std::launder(reinterpret_cast<Obj*>(self.inline_ptr_()));
                 o.~Obj();
             },
-            +[](delegate_sbo& src, delegate_sbo& dst) {
+            +[](delegate_sbo& src, delegate_sbo& dst) noexcept {
                 Obj& s = *std::launder(reinterpret_cast<Obj*>(src.inline_ptr_()));
                 ::new (dst.inline_ptr_()) Obj(std::move(s));
                 s.~Obj();
@@ -440,7 +483,7 @@ private:
     static const manager& mgr_heap_() noexcept {
         static const manager m{
             +[](delegate_sbo& self) noexcept { delete static_cast<Obj*>(self.ctx_); },
-            +[](delegate_sbo& src, delegate_sbo& dst) {
+            +[](delegate_sbo& src, delegate_sbo& dst) noexcept {
                 dst.ctx_ = src.ctx_;
                 dst.invoke_ = &invoke_obj_<Obj>;
                 dst.mgr_ = &mgr_heap_<Obj>();
@@ -461,11 +504,17 @@ private:
         }
 
         static_assert(std::is_invocable_r_v<R, DF&, Args...>, "tiny::delegate_sbo: signature mismatch.");
+        static_assert(std::is_nothrow_destructible_v<DF>,
+                      "tiny::delegate_sbo: stored callable must be nothrow-destructible "
+                      "(reset()/~delegate_sbo() are noexcept).");
 
         constexpr std::size_t need_size  = sizeof(DF);
         constexpr std::size_t need_align = alignof(DF);
 
         if constexpr (need_size <= InlineBytes && need_align <= InlineAlign) {
+            static_assert(std::is_nothrow_move_constructible_v<DF>,
+                          "tiny::delegate_sbo: an inline-stored callable must be "
+                          "nothrow-move-constructible so delegate moves are noexcept.");
             ::new (inline_ptr_()) DF(std::forward<F>(f));
             ctx_ = inline_ptr_();
             invoke_ = &invoke_obj_<DF>;
@@ -529,8 +578,11 @@ public:
     delegate(const delegate&) = delete;
     delegate& operator=(const delegate&) = delete;
 
-    delegate(delegate&& other) { move_from_(other); }
-    delegate& operator=(delegate&& other) {
+    // Stored callables are statically required to be nothrow-movable and
+    // nothrow-destructible, so transfer and teardown are unconditionally
+    // noexcept: a type-erased move can never fail halfway.
+    delegate(delegate&& other) noexcept { move_from_(other); }
+    delegate& operator=(delegate&& other) noexcept {
         if (this != &other) { reset(); move_from_(other); }
         return *this;
     }
@@ -564,17 +616,26 @@ public:
         if (!fp) return *this;
         ::new (inline_ptr_()) fnptr_t(fp);
         ctx_ = inline_ptr_();
-        invoke_ = &invoke_fnptr_stored_;
+        invoke_ = &invoke_obj_<fnptr_t>;
         mgr_ = &mgr_inline_<fnptr_t>();
         return *this;
     }
 
+    // Constrained so overload resolution (and std::is_constructible /
+    // std::is_assignable) reject a non-matching callable instead of failing
+    // inside the body.
     template <class F, class DF = std::decay_t<F>,
-              std::enable_if_t<!std::is_same_v<DF, delegate>, int> = 0>
+              std::enable_if_t<!std::is_same_v<DF, delegate>
+                               && (std::is_invocable_r_v<R, DF&, Args...>
+                                   || std::is_convertible_v<DF, fnptr_t>),
+                               int> = 0>
     delegate(F&& f) { *this = std::forward<F>(f); }
 
     template <class F, class DF = std::decay_t<F>,
-              std::enable_if_t<!std::is_same_v<DF, delegate>, int> = 0>
+              std::enable_if_t<!std::is_same_v<DF, delegate>
+                               && (std::is_invocable_r_v<R, DF&, Args...>
+                                   || std::is_convertible_v<DF, fnptr_t>),
+                               int> = 0>
     delegate& operator=(F&& f) {
         reset();
         assign_callable_(std::forward<F>(f));
@@ -611,7 +672,7 @@ public:
 private:
     struct manager {
         void (*destroy)(delegate&) noexcept;
-        void (*move)(delegate& src, delegate& dst);
+        void (*move)(delegate& src, delegate& dst) noexcept;
         bool (*uses_heap)(const delegate&) noexcept;
     };
 
@@ -630,7 +691,7 @@ private:
         mgr_ = nullptr;
     }
 
-    void move_from_(delegate& other) {
+    void move_from_(delegate& other) noexcept {
         if (other.mgr_) {
             other.mgr_->move(other, *this);
             other.clear_();
@@ -670,16 +731,10 @@ private:
         else { return std::invoke(Method, self, std::forward<Args>(a)...); }
     }
 
-    static R invoke_fnptr_stored_(void* c, Args... a) {
-        auto fp = *std::launder(reinterpret_cast<fnptr_t*>(c));
-        if constexpr (std::is_void_v<R>) { fp(std::forward<Args>(a)...); return; }
-        else { return fp(std::forward<Args>(a)...); }
-    }
-
     static const manager& mgr_ref_() noexcept {
         static const manager m{
             +[](delegate&) noexcept {},
-            +[](delegate& src, delegate& dst) {
+            +[](delegate& src, delegate& dst) noexcept {
                 dst.ctx_ = src.ctx_;
                 dst.invoke_ = src.invoke_;
                 dst.mgr_ = &mgr_ref_();
@@ -697,7 +752,7 @@ private:
                 Obj& o = *std::launder(reinterpret_cast<Obj*>(self.inline_ptr_()));
                 o.~Obj();
             },
-            +[](delegate& src, delegate& dst) {
+            +[](delegate& src, delegate& dst) noexcept {
                 Obj& s = *std::launder(reinterpret_cast<Obj*>(src.inline_ptr_()));
                 ::new (dst.inline_ptr_()) Obj(std::move(s));
                 s.~Obj();
@@ -715,7 +770,7 @@ private:
     static const manager& mgr_heap_() noexcept {
         static const manager m{
             +[](delegate& self) noexcept { delete static_cast<Obj*>(self.ctx_); },
-            +[](delegate& src, delegate& dst) {
+            +[](delegate& src, delegate& dst) noexcept {
                 dst.ctx_ = src.ctx_;
                 dst.invoke_ = &invoke_obj_<Obj>;
                 dst.mgr_ = &mgr_heap_<Obj>();
@@ -769,11 +824,17 @@ private:
         }
 
         static_assert(std::is_invocable_r_v<R, DF&, Args...>, "tiny::delegate: signature mismatch.");
+        static_assert(std::is_nothrow_destructible_v<DF>,
+                      "tiny::delegate: stored callable must be nothrow-destructible "
+                      "(reset()/~delegate() are noexcept).");
 
         constexpr std::size_t need_size  = sizeof(DF);
         constexpr std::size_t need_align = alignof(DF);
 
         if constexpr (need_size <= InlineBytes && need_align <= InlineAlign) {
+            static_assert(std::is_nothrow_move_constructible_v<DF>,
+                          "tiny::delegate: an inline-stored callable must be "
+                          "nothrow-move-constructible so delegate moves are noexcept.");
             ::new (inline_ptr_()) DF(std::forward<F>(f));
             ctx_ = inline_ptr_();
             invoke_ = &invoke_obj_<DF>;
@@ -853,8 +914,13 @@ inline constexpr void delegate_sanity() {
 
     static_assert(std::is_move_constructible_v<D>, "delegate must be move-constructible.");
     static_assert(std::is_move_assignable_v<D>, "delegate must be move-assignable.");
+    static_assert(std::is_nothrow_move_constructible_v<D>, "delegate moves must be noexcept.");
+    static_assert(std::is_nothrow_move_assignable_v<D>, "delegate move-assign must be noexcept.");
+    static_assert(std::is_nothrow_destructible_v<D>, "delegate destruction must be noexcept.");
     static_assert(!std::is_copy_constructible_v<D>, "delegate must be move-only.");
     static_assert(!std::is_copy_assignable_v<D>, "delegate must be move-only.");
+    static_assert(!std::is_constructible_v<D, int>, "delegate must reject non-callables (SFINAE).");
+    static_assert(!std::is_assignable_v<D&, double>, "delegate must reject non-callables (SFINAE).");
 
     static_assert(alignof(D) >= alignof(void*), "delegate alignment too small.");
     static_assert(sizeof(D) >= 3 * sizeof(void*), "delegate too small (layout bug?).");
@@ -867,8 +933,13 @@ inline constexpr void delegate_sbo_sanity() {
 
     static_assert(std::is_move_constructible_v<D>, "delegate_sbo must be move-constructible.");
     static_assert(std::is_move_assignable_v<D>, "delegate_sbo must be move-assignable.");
+    static_assert(std::is_nothrow_move_constructible_v<D>, "delegate_sbo moves must be noexcept.");
+    static_assert(std::is_nothrow_move_assignable_v<D>, "delegate_sbo move-assign must be noexcept.");
+    static_assert(std::is_nothrow_destructible_v<D>, "delegate_sbo destruction must be noexcept.");
     static_assert(!std::is_copy_constructible_v<D>, "delegate_sbo must be move-only.");
     static_assert(!std::is_copy_assignable_v<D>, "delegate_sbo must be move-only.");
+    static_assert(!std::is_constructible_v<D, int>, "delegate_sbo must reject non-callables (SFINAE).");
+    static_assert(!std::is_assignable_v<D&, double>, "delegate_sbo must reject non-callables (SFINAE).");
 
     static_assert(alignof(D) >= alignof(void*), "delegate_sbo alignment too small.");
     static_assert(sizeof(D) >= 3 * sizeof(void*), "delegate_sbo too small (layout bug?).");

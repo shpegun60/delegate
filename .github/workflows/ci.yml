@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host-tests:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,    os: ubuntu-latest,  cc: gcc,   cxx: g++ }
+          - { name: linux-clang,  os: ubuntu-latest,  cc: clang, cxx: clang++ }
+          - { name: windows-msvc, os: windows-latest, cc: cl,    cxx: cl }
+          - { name: macos-clang,  os: macos-latest,   cc: clang, cxx: clang++ }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  negative-compile:
+    name: misuse must not compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Each tests/negative/*.cpp must be rejected
+        run: |
+          fail=0
+          for f in tests/negative/*.cpp; do
+            if g++ -std=c++17 -I. -c "$f" -o /dev/null 2>/dev/null; then
+              echo "ERROR: $f compiled but must be rejected"
+              fail=1
+            else
+              echo "OK: $f rejected"
+            fi
+          done
+          exit $fail
+
+  cortex-m-cross:
+    name: cortex-m4 cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+      - name: Compile probe for Cortex-M4
+        run: >
+          arm-none-eabi-g++ -mcpu=cortex-m4 -mthumb -std=c++17 -O2
+          -Wall -Wextra -Wpedantic -Werror
+          -fno-exceptions -fno-rtti -ffreestanding
+          -I. -c tests/cortexm_probe.cpp -o cortexm_probe.o
