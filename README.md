@@ -1,5 +1,8 @@
 # tiny_delegate
 
+[![CI](https://github.com/shpegun60/delegate/actions/workflows/ci.yml/badge.svg)](https://github.com/shpegun60/delegate/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 `tiny_delegate.hpp` is a compact C++17/C++20 callback library with three related delegate types:
 
 - `tiny::delegate_ref<Sig>`: non-owning, cheap to copy and rebind
@@ -141,6 +144,25 @@ ETL-style delegates are often very good for embedded work, especially when you w
 
 That makes it attractive when your project mixes classic embedded callback references with modern lambdas and move-only functors.
 
+### Works with tickcore out of the box
+
+[tickcore](https://github.com/shpegun60/tickcore)'s `Scheduler` accepts any
+named callable, so every delegate type drops straight into a timer task with
+no integration code:
+
+```cpp
+#include "Timers.h"          // tickcore
+#include "tiny_delegate.hpp"
+
+unsigned attempts = 0u;
+auto retry = tiny::delegate<bool()>{[&attempts] { return ++attempts < 3u; }};
+
+(void)scheduler.every(100u, retry);   // repeats while the delegate returns true
+```
+
+The usual lifetime rule applies twice: the delegate must outlive the task,
+and whatever a `borrow`/`bind` delegate references must outlive the delegate.
+
 ### Honest limitations
 
 `tiny_delegate` is not trying to be the best at everything.
@@ -155,6 +177,24 @@ Other libraries may be better if you need:
 
 Its strength is not "maximum feature count".
 Its strength is clarity, predictability, and a very good ownership model for real systems code.
+
+## Consuming the library
+
+The library is a single header: nothing is compiled or linked, a consumer
+only needs the repository root on its include path and C++17.
+
+- **Plain include path** (STM32CubeIDE, Keil, any build system): add the
+  repository directory to the compiler include paths.
+- **CMake** (vendored copy, git submodule, or FetchContent): the root
+  provides the `tiny_delegate::tiny_delegate` INTERFACE target:
+
+  ```cmake
+  add_subdirectory(third_party/delegate)
+  target_link_libraries(app PRIVATE tiny_delegate::tiny_delegate)
+  ```
+
+  The test suite builds only when the project is configured directly
+  (`cmake -S . -B build && ctest --test-dir build`), never for consumers.
 
 ## Header
 
@@ -1528,6 +1568,35 @@ If you need a custom configuration, use:
 using D = tiny::delegate<int(int), 32, 32>;
 D cb = D::bind<&T::method>(obj);
 ```
+
+## Tests
+
+```sh
+cmake -S . -B build && cmake --build build && ctest --test-dir build
+```
+
+Four adversarial suites run in CI on gcc, clang, MSVC, and macOS, plus an
+arm-none-eabi Cortex-M4 compile job and a "misuse must not compile" job:
+
+- **core_tests** — instrumented lifetime counters prove zero leaks, zero
+  copies on the move-only path, safe self-move, alignment inside the SBO
+  buffer before and after moves, and **zero heap allocations** (global
+  `operator new`/`delete` are intercepted and must count 0/0).
+- **cross_tu_tests** — a delegate created in one translation unit is moved
+  and destroyed in another, guarding the manager singletons against ODR
+  surprises.
+- **heap_tests** — with `TINY_DELEGATE_ENABLE_HEAP_FALLBACK=1`: exactly one
+  allocation per oversized callable, pointer-handoff moves with no extra
+  alloc/free, and a perfectly balanced alloc/free count at exit.
+- **lenient_tests** — a custom `TINY_DELEGATE_ASSERT` override, verifying
+  the policy hook fires and the object stays in a defined empty state.
+- **tests/negative/** — six misuse cases (borrowing a temporary, oversized
+  callable without fallback, copying a move-only delegate, binding a
+  temporary, signature mismatch, throwing-move callable) that CI proves
+  are rejected at compile time.
+
+The Qt demo app (`delegate.pro`) is a separate interactive test bench and
+is not part of the CMake build.
 
 ## Summary
 
