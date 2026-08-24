@@ -464,15 +464,30 @@ niche outright, and the disassembly shows by exactly how much:
 | `fn(int)` — no context | 3 / 1 | 5 (2 + 3-instr thunk) / 2 | fn ptr |
 | `fn(void)` — nothing at all | 1–2 / 1 | 3 (2 + 1-instr thunk) / 2 | fn ptr |
 
-For a plain `fn(int)` the delegate's thunk is, amusingly, the exact
-same 3 instructions as the bare call site — executed one hop later;
-for `fn(void)` the thunk degenerates to a single `bx r0`, since the
-payload *is* the function and `ldrd` already put it in r0. The rule in
-one line: **the delegate wins exactly when there is a context to
-deliver** (it rides to r0 for free); with nothing to deliver, the
-payload slot and the thunk are one-to-two instructions of ballast plus
-a second pipeline refill, and 8 B instead of 4. C ABI boundaries
-accept nothing but the raw pointer anyway. And all of the
+The apparent paradox — how can *with* context be cheaper than
+*without*? — resolves cleanly: the delegate call site is always the
+same 2 instructions; what differs is where the first jump lands. A
+lambda, functor, or method is a **compile-time-known target type**, so
+its generated trampoline has the target's code inlined — jump #1 lands
+directly in the work. A runtime function pointer is **data** in the
+payload; no compiler can inline data, so jump #1 lands in a forwarder
+(for `fn(int)`, amusingly, the exact same 3 instructions as the bare
+call site; for `fn(void)` a single `bx r0`) and jump #2 reaches the
+work. It is not "context beats no context" — it is "compile-time-known
+target beats runtime-valued target".
+
+Which also names the fix: a plain function that IS known at compile
+time should be bound with `bind<&fn>()` — its trampoline is a *direct*
+`b.w fn` (measured), not an indirect hop, and a small target body
+inlines into the trampoline outright. The runtime-pointer rows above
+apply only when the function's identity is genuinely a runtime value.
+
+The rule in one line: **the delegate wins when there is a context to
+deliver** (it rides to r0 for free) **and matches when the target is
+known at compile time**; a runtime-valued, context-free pointer is the
+one case where the payload slot and forwarder are ballast — one or two
+instructions plus a second pipeline refill, and 8 B instead of 4. C
+ABI boundaries accept nothing but the raw pointer anyway. And all of the
 cycle talk above is Cortex-M talk: on a big out-of-order x64 core the
 speculation machinery hides the dependent loads and the shuffles alike,
 every indirect mechanism measures the same ~1 ns, and only the inlining
