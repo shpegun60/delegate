@@ -280,7 +280,7 @@ the PMF value likewise comes from another TU:
 | pointer-to-member `(obj.*pmf)(x)` | 0.8–1.0 | **13 instr, stack frame** | 8 B PMF + object ptr |
 | `tiny::delegate_ref` — lambda, method, or function alike (default) | 0.8–1.2 | 5 instr | 8 B |
 | `tiny::delegate_ref` (assert disabled) | 0.8–1.2 | **2 instr** (`ldrd` + `bx`) | 8 B |
-| `tiny::delegate` (owning, SBO) | 0.97 | 6 instr | 32 B |
+| `tiny::delegate` / `delegate_sbo` (owning) | 0.97 | 5 / **2** instr (same call site as `ref`) | 32 B |
 | `std::function` | 0.97 | 13+ instr | 32 B + heap |
 
 The honest x64 reading first: every *true indirect* dispatch on a big
@@ -330,25 +330,30 @@ M3/M4 timing (`LDR` 2, consecutive independent loads pipeline to +1,
 row, callee body excluded). Flash wait states scale everything but
 change no rankings:
 
+Every tiny delegate flavor — `delegate_ref`, `delegate_sbo`, and the
+owning `delegate` — compiles to the *identical* call-site shape (the
+owning ones just read at a small offset), so each ranking row below
+covers all three:
+
 | # | Dispatch | Instr | Load chain | Est. cycles |
 | --- | --- | --- | --- | --- |
 | 1 | direct call (function / non-virtual method) | 1 | — | ~2–4 |
-| 2 | `tiny::delegate_ref`, assert disabled | **2** | one `ldrd`, independent | ~5–6 |
+| 2 | any tiny delegate (`ref`/`sbo`/owning), assert disabled | **2** | one `ldrd`, independent | ~5–6 |
 | 3 | raw fn ptr + `void*` ctx | 4 | none (register moves) | ~6–7 |
 | 4 | virtual call | 3 | **2 dependent loads** | ~7–8 |
-| 5 | `tiny::delegate_ref`, default (empty-call trap) | 5 | independent + predictable `cbnz` | ~8 |
-| 6 | `tiny::delegate` (owning) | 6 | independent | ~8–9 |
-| 7 | `std::function` | 13+ | frame + spills | ~20+ |
-| 8 | pointer-to-member | 13, stack frame | virtual-bit test, cond. loads | ~20+ |
+| 5 | any tiny delegate, default (empty-call trap) | 5 | independent + predictable `cbnz` | ~8 |
+| 6 | `std::function` | 13+ | frame + spills | ~20+ |
+| 7 | pointer-to-member | 13, stack frame | virtual-bit test, cond. loads | ~20+ |
 
-Two rankings worth noticing. The lenient `delegate_ref` is the cheapest
+Two rankings worth noticing. The lenient delegate is the cheapest
 indirect dispatch on the platform, full stop: one independent
-double-load and a jump. And the raw function pointer beats the virtual
-call despite *more* instructions — three 1-cycle register moves cost
-less than two loads where the second's address depends on the first's
-result, a stall an in-order pipeline cannot hide. Fewer instructions is
-not the metric; shorter dependency chains are, and the disassembly
-shows both.
+double-load and a jump — and that holds for the owning flavors too,
+not only the two-pointer `ref`. And the raw function pointer beats the
+virtual call despite *more* instructions — three 1-cycle register
+moves cost less than two loads where the second's address depends on
+the first's result, a stall an in-order pipeline cannot hide. Fewer
+instructions is not the metric; shorter dependency chains are, and the
+disassembly shows both.
 
 ### Code size and dependencies (Cortex-M4, -Os, store + call one lambda)
 
