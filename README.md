@@ -40,9 +40,11 @@ timers — see **[COOKBOOK.md](COOKBOOK.md)**.
   names the fix); with the heap fallback enabled, a callable whose move may
   throw is stored on the heap instead — its handoff move needs no payload
   move at all. Everything stored must be nothrow-destructible.
-- Fail-closed runtime guards: calling an empty delegate or assigning a null
-  function pointer traps deterministically by default; the policy is fully
-  overridable through `TINY_DELEGATE_ASSERT`
+- `assert()`-style runtime guards, keyed on `NDEBUG`: in debug builds
+  calling an empty delegate or assigning a null function pointer traps
+  deterministically (fail-closed); in release builds the checks compile
+  out and every call site is two instructions on Cortex-M. Fully
+  overridable through `TINY_DELEGATE_ASSERT` in either direction
 - Move-only owning delegates
 - Non-owning ref delegate
 - Small-buffer optimization with a platform-scaled default capacity
@@ -166,15 +168,17 @@ the std::function numbers):
 | --- | --- | --- |
 | size (ARM32 / x64) | 8 / 16 B | 8 / 16 B |
 | call speed (x64) | 0.94 ns | 0.94 ns |
-| call path (Cortex-M4) | 3 instructions, **no empty check** | 5 instructions incl. guard |
-| calling an empty delegate | **segfault / HardFault** (measured SIGSEGV with the default config) | deterministic trap |
+| call path (Cortex-M4) | 3 instructions, **no empty check** | debug: 5 incl. guard / release (`NDEBUG`): **2** |
+| calling an empty delegate | **segfault / HardFault** (measured SIGSEGV with the default config) | debug: deterministic trap / release: UB |
 | temporaries | rejected | rejected |
 
 So in the non-owning niche the two are equals, with one philosophical
 difference: `etl::delegate` spends zero instructions on the empty check
-and crashes uncontrolled when misused; `tiny::delegate_ref` spends two
-and traps deterministically — and `#define TINY_DELEGATE_ASSERT(e, m)
-((void)0)` buys the ETL behavior back if those two instructions matter.
+and crashes uncontrolled when misused in any build; `tiny::delegate_ref`
+follows `assert()` semantics — debug builds spend two instructions and
+trap deterministically, release (`NDEBUG`) builds drop to 2 instructions
+total, one below ETL's 3. `TINY_DELEGATE_ASSERT` pins either behavior in
+any build type.
 
 `tiny_delegate` provides the same safe-call ergonomics as
 `etl::delegate` — `call_if(args...)` returning bool/`std::optional<R>` and
@@ -278,8 +282,8 @@ the PMF value likewise comes from another TU:
 | virtual, cross-TU (true vtable dispatch) | 0.8–1.0 | 3 instr | 4 B vptr **per object** + vtable in flash |
 | raw fn ptr + `void*` ctx | 0.8–1.0 | 4 instr | 8 B |
 | pointer-to-member `(obj.*pmf)(x)` | 0.8–1.0 | **13 instr, stack frame** | 8 B PMF + object ptr |
-| `tiny::delegate_ref` — lambda, method, or function alike (default) | 0.8–1.2 | 5 instr | 8 B |
-| `tiny::delegate_ref` (assert disabled) | 0.8–1.2 | **2 instr** (`ldrd` + `bx`) | 8 B |
+| `tiny::delegate_ref` — lambda, method, or function alike (debug: trap guard) | 0.8–1.2 | 5 instr | 8 B |
+| `tiny::delegate_ref` (release, `NDEBUG`) | 0.8–1.2 | **2 instr** (`ldrd` + `bx`) | 8 B |
 | `tiny::delegate` / `delegate_sbo` (owning) | 0.97 | 5 / **2** instr (same call site as `ref`) | 32 B |
 | `std::function` | 0.97 | 13+ instr | 32 B + heap |
 
@@ -302,11 +306,11 @@ The mechanisms separate on everything else:
 - **Mechanically the delegate is at or below a virtual call.** The
   vtable path is two *dependent* loads (object → vptr → slot) with no
   null check — a null interface pointer is UB. `delegate_ref` is two
-  *independent* loads from the same 8 bytes; with the assert disabled
-  they fuse into a single `ldrd` and the call site is 2 instructions,
-  below the virtual's 3. The default build spends its 2 extra
-  instructions (`cbnz` + `udf`) on the fail-closed empty-call trap the
-  virtual call simply does not have.
+  *independent* loads from the same 8 bytes; in release builds
+  (`NDEBUG`, the default policy) they fuse into a single `ldrd` and the
+  call site is 2 instructions, below the virtual's 3. A debug build
+  spends 2 extra instructions (`cbnz` + `udf`) on the fail-closed
+  empty-call trap the virtual call simply does not have.
 - **The virtual call's real trump card is the compiler, not the
   mechanism.** With the hierarchy visible (same TU or LTO), GCC
   speculatively devirtualizes: vtable compare plus inlined body, 0.39
@@ -338,14 +342,14 @@ covers all three:
 | # | Dispatch | Instr | Load chain | Est. cycles |
 | --- | --- | --- | --- | --- |
 | 1 | direct call (function / non-virtual method) | 1 | — | ~2–4 |
-| 2 | any tiny delegate (`ref`/`sbo`/owning), assert disabled | **2** | one `ldrd`, independent | ~5–6 |
+| 2 | any tiny delegate (`ref`/`sbo`/owning), release (`NDEBUG` default) | **2** | one `ldrd`, independent | ~5–6 |
 | 3 | raw fn ptr + `void*` ctx | 4 | none (register moves) | ~6–7 |
 | 4 | virtual call | 3 | **2 dependent loads** | ~7–8 |
-| 5 | any tiny delegate, default (empty-call trap) | 5 | independent + predictable `cbnz` | ~8 |
+| 5 | any tiny delegate, debug default (empty-call trap) | 5 | independent + predictable `cbnz` | ~8 |
 | 6 | `std::function` | 13+ | frame + spills | ~20+ |
 | 7 | pointer-to-member | 13, stack frame | virtual-bit test, cond. loads | ~20+ |
 
-Two rankings worth noticing. The lenient delegate is the cheapest
+Two rankings worth noticing. The release-mode delegate is the cheapest
 indirect dispatch on the platform, full stop: one independent
 double-load and a jump — and that holds for the owning flavors too,
 not only the two-pointer `ref`. And the raw function pointer beats the
@@ -707,28 +711,43 @@ Default:
 User hook for runtime assertions. It guards every unsafe entry point:
 calling an empty delegate and assigning a null function pointer.
 
-Default (fail-closed): a violated guard traps deterministically —
-`__builtin_trap()` on GCC/Clang (a single `udf` instruction on ARM),
-`std::abort()` elsewhere — instead of continuing into undefined behavior
-such as an indirect call through a null pointer.
+The default is keyed on `NDEBUG`, exactly like `<cassert>`:
+
+- **Debug builds (no `NDEBUG`) fail closed**: a violated guard traps
+  deterministically — `__builtin_trap()` on GCC/Clang (a single `udf`
+  instruction on ARM), `std::abort()` elsewhere — instead of continuing
+  into undefined behavior such as an indirect call through null.
+- **Release builds (`NDEBUG`) compile the checks out**: every delegate
+  call site becomes two instructions on Cortex-M (`ldrd` + `bx`), the
+  cheapest indirect dispatch on the platform. Calling an empty delegate
+  is then UB, the same contract as calling through a null interface
+  pointer.
 
 ```cpp
 // effective default
+#ifdef NDEBUG
+#define TINY_DELEGATE_ASSERT(expr, msg) ((void)0)
+#else
 #define TINY_DELEGATE_ASSERT(expr, msg) \
     do { if (!(expr)) { ::tiny::detail::trap(); } } while (false)
+#endif
 ```
 
-Override examples:
+Override examples (define project-wide in the build system — like
+`NDEBUG` itself, the definition must be identical across every TU that
+includes the header):
 
 ```cpp
+// keep the fail-closed trap even in release builds
+#define TINY_DELEGATE_ASSERT(expr, msg) \
+    do { if (!(expr)) { ::tiny::detail::trap(); } } while (false)
+
 // integrate a project assert
 #include <cassert>
 #define TINY_DELEGATE_ASSERT(expr, msg) assert((expr) && (msg))
-#include "tiny_delegate.hpp"
 
-// or restore the old fully unchecked behavior
+// force the fully unchecked behavior in every build type
 #define TINY_DELEGATE_ASSERT(expr, msg) ((void)0)
-#include "tiny_delegate.hpp"
 ```
 
 ## Quick Start
@@ -821,9 +840,11 @@ The same idea works for:
 - `tiny::delegate_sbo<Sig, ...>`
 - `tiny::delegate<Sig, ...>`
 
-Calling an empty delegate is guarded by `TINY_DELEGATE_ASSERT`, which traps
-deterministically by default (hard failure, no undefined behavior). Override
-the macro to log, assert, or — explicitly — remove the check.
+Calling an empty delegate is guarded by `TINY_DELEGATE_ASSERT`, which
+follows `assert()` semantics: debug builds trap deterministically (hard
+failure, no undefined behavior), release (`NDEBUG`) builds compile the
+check out and the call is UB. Override the macro to log, assert, or pin
+either behavior in every build type.
 
 ### Copy and move rules
 

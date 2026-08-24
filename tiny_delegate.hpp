@@ -28,12 +28,17 @@
 //   fits_inline<T>(), required_inline_bytes<T>(), static_assert_fits_inline<T>()
 //   ABI sanity checks in tiny::ct
 //
-// Runtime paranoia policy:
+// Runtime paranoia policy (assert()-style, keyed on NDEBUG):
 //   TINY_DELEGATE_ASSERT(expr, msg) guards every unsafe entry point (calling
-//   an empty delegate, assigning a null function pointer). The DEFAULT policy
-//   traps deterministically (__builtin_trap / std::abort) instead of jumping
-//   through a null pointer. Define TINY_DELEGATE_ASSERT yourself to log,
-//   count, or no-op ((void)0 restores the old unchecked behavior).
+//   an empty delegate, assigning a null function pointer). Without NDEBUG
+//   the default traps deterministically (__builtin_trap / std::abort)
+//   instead of jumping through a null pointer. With NDEBUG (release) the
+//   checks compile out entirely and every delegate call site is two
+//   instructions on Cortex-M — calling an empty delegate is then UB, same
+//   as calling a method through a null interface pointer. Define
+//   TINY_DELEGATE_ASSERT yourself to force either behavior in any build,
+//   or to log/count instead. Like NDEBUG itself, the definition must be
+//   identical across every TU that includes this header (ODR).
 
 #include <cstddef>
 #include <cstdlib>    // std::abort (non-GNU trap fallback)
@@ -68,13 +73,20 @@
 #endif
 #endif
 
-// Fail-closed default: a violated guard traps deterministically instead of
-// continuing into undefined behavior (e.g. an indirect call through null).
-// Override to integrate a project assert/log policy, or define as ((void)0)
-// to remove every check.
+// assert()-style default. Debug builds (no NDEBUG) fail closed: a violated
+// guard traps deterministically instead of continuing into undefined
+// behavior (e.g. an indirect call through null). Release builds (NDEBUG)
+// compile the checks out, exactly like <cassert>, which makes the call
+// site two instructions on Cortex-M. Override TINY_DELEGATE_ASSERT to pin
+// either behavior regardless of NDEBUG, or to log/count instead; keep the
+// definition identical across all TUs.
 #ifndef TINY_DELEGATE_ASSERT
+#ifdef NDEBUG
+#define TINY_DELEGATE_ASSERT(expr, msg) ((void)0)
+#else
 #define TINY_DELEGATE_ASSERT(expr, msg) \
     do { if (TINY_DELEGATE_UNLIKELY(!(expr))) { ::tiny::detail::trap(); } } while (false)
+#endif
 #endif
 
 namespace tiny {

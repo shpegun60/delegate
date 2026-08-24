@@ -28,7 +28,8 @@ int dispatch(unsigned op, int arg) { return k_commands[op](arg); }
 ## 2. Rebindable event slot — empty is legal
 
 A subscription point that may have no subscriber. `call_if` makes the
-empty state explicit instead of trapping:
+empty state explicit instead of misusing `operator()` (which traps in
+debug builds and is UB in release):
 
 ```cpp
 tiny::delegate_ref<void(int)> on_sample;      // nobody subscribed yet
