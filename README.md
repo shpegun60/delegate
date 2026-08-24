@@ -455,11 +455,24 @@ Three conclusions fall straight out of the listings:
 | constexpr / ROM tables | yes | yes (`bind<...>()`) |
 | C ABI boundary (HAL callbacks, vector tables) | **yes** | no |
 
-Honest footnotes. A *bare* function pointer with no context is still 4 B
-and jumps straight to the target, while a delegate always carries the
-payload slot and reaches plain functions through a one-branch thunk — 
-for a stateless hot hook where 4 bytes matter, the raw pointer keeps
-that niche, and C ABI boundaries accept nothing else. And all of the
+Honest footnotes. A *bare* function pointer with no context wins its
+niche outright, and the disassembly shows by exactly how much:
+
+| Target | bare fn ptr | delegate (release) | winner |
+| --- | --- | --- | --- |
+| `fn(void* ctx, int)` — has context | 4 instr / 1 branch | **2 / 1** | **delegate** |
+| `fn(int)` — no context | 3 / 1 | 5 (2 + 3-instr thunk) / 2 | fn ptr |
+| `fn(void)` — nothing at all | 1–2 / 1 | 3 (2 + 1-instr thunk) / 2 | fn ptr |
+
+For a plain `fn(int)` the delegate's thunk is, amusingly, the exact
+same 3 instructions as the bare call site — executed one hop later;
+for `fn(void)` the thunk degenerates to a single `bx r0`, since the
+payload *is* the function and `ldrd` already put it in r0. The rule in
+one line: **the delegate wins exactly when there is a context to
+deliver** (it rides to r0 for free); with nothing to deliver, the
+payload slot and the thunk are one-to-two instructions of ballast plus
+a second pipeline refill, and 8 B instead of 4. C ABI boundaries
+accept nothing but the raw pointer anyway. And all of the
 cycle talk above is Cortex-M talk: on a big out-of-order x64 core the
 speculation machinery hides the dependent loads and the shuffles alike,
 every indirect mechanism measures the same ~1 ns, and only the inlining
