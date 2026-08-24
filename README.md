@@ -359,6 +359,113 @@ the first's result, a stall an in-order pipeline cannot hide. Fewer
 instructions is not the metric; shorter dependency chains are, and the
 disassembly shows both.
 
+#### The disassembly, read closely
+
+Every listing below is real `arm-none-eabi-g++ -Os` output for
+Cortex-M4 (the same objects the instruction counts came from):
+
+```asm
+; ---- direct call: the only free lunch --------------------------------
+call_direct:
+    b.w     external_work           ; 1 instruction, done
+
+; ---- virtual call: object -> vtable -> code --------------------------
+call_virtual:
+    ldr     r3, [r0, #0]            ; load vptr        (waits on r0)
+    ldr     r3, [r3, #0]            ; load vtable slot (waits on THAT load)
+    bx      r3
+
+; ---- raw fn ptr + void* ctx: zero loads, three shuffles --------------
+call_fp:                            ; args arrive: r0=fn r1=ctx r2=x
+    mov     r3, r0                  ; fn out of r0 (r0 is needed...)
+    mov     r0, r1                  ; ...because ctx must be argument 0
+    mov     r1, r2                  ; user argument shifts down
+    bx      r3
+
+; ---- delegate_ref, debug default: the guard costs 2 ------------------
+call_ref:
+    ldr     r3, [r0, #4]            ; invoke_
+    cbnz    r3, 1f                  ; empty?
+    udf     #255                    ;   -> deterministic trap
+1:  ldr     r0, [r0, #0]            ; payload_ straight into arg 0
+    bx      r3
+
+; ---- delegate_ref, release (NDEBUG): the whole point -----------------
+call_ref:
+    ldrd    r0, r3, [r0]            ; payload_ AND invoke_, one instruction
+    bx      r3
+
+; ---- owning delegate / delegate_sbo, release: identical shape --------
+call_own:
+    ldrd    r0, r3, [r0, #16]       ; same site, just past the SBO buffer
+    bx      r3
+
+; ---- pointer-to-member: the reason delegates exist -------------------
+call_pmf:
+    push    {r0, r1, r4, r5}        ; needs a STACK FRAME for a call
+    mov     r4, r0
+    add     r0, sp, #8
+    stmdb   r0, {r1, r2}
+    mov     r1, r3
+    ldrd    r2, r3, [sp]
+    asrs    r5, r3, #1              ; this-adjustment
+    add.w   r0, r4, r3, asr #1
+    lsls    r3, r3, #31             ; is it a VIRTUAL method? test the bit
+    itt     mi
+    ldrmi   r3, [r4, r5]            ;   conditional vtable loads
+    ldrmi   r2, [r3, r2]
+    add     sp, #8
+    pop     {r4, r5}
+    bx      r2                      ; 13 instructions total
+```
+
+Three conclusions fall straight out of the listings:
+
+1. **Versus virtual: one memory level fewer.** A vtable is a middleman —
+   the object stores a pointer *to a table* that stores the function, so
+   the path is object → vtable → code and the second load cannot start
+   until the first retires; an in-order core eats both latencies in
+   full. The delegate stores the function pointer *in itself*: object →
+   code. The hop is gone, and because both words sit adjacent, the
+   hardware fetches them with a single `ldrd`.
+
+2. **Versus the fn pointer: the struct layout IS the calling
+   convention.** The fn-pointer call site has zero loads — and still
+   loses, because two separate values arrive in the wrong registers and
+   need three `mov`s to match the callee's ABI. The delegate's pair is
+   laid out so `ldrd r0, r3` drops `payload_` directly into r0 — exactly
+   where the invoker expects its first argument — and `invoke_` into r3
+   for the `bx`. Nothing to rearrange, ever.
+
+3. **The punchline:** a delegate *is* "fn ptr + ctx", packed into the
+   ABI-optimal shape — two adjacent words (one `ldrd`), payload first
+   (lands in r0), function instead of a vtable middleman (no dependent
+   load). Put fn + ctx into a struct by hand and pass its address, and
+   you have reinvented `delegate_ref`.
+
+#### Head to head: delegate vs the raw function pointer
+
+| | fn ptr + `void*` ctx | `delegate_ref` (release) |
+| --- | --- | --- |
+| size per binding (ARM32) | 8 B | 8 B |
+| call site | 4 instr, register shuffles | **2 instr**, `ldrd` + `bx` |
+| target kinds | functions only; methods need a hand-written `static thunk(void*)` per class | function, method, lambda, functor — one type, thunks generated |
+| empty-call behavior | UB in every build | debug: trap; release: UB |
+| safe-call helpers | none | `call_if`, `call_or` |
+| constexpr / ROM tables | yes | yes (`bind<...>()`) |
+| C ABI boundary (HAL callbacks, vector tables) | **yes** | no |
+
+Honest footnotes. A *bare* function pointer with no context is still 4 B
+and jumps straight to the target, while a delegate always carries the
+payload slot and reaches plain functions through a one-branch thunk — 
+for a stateless hot hook where 4 bytes matter, the raw pointer keeps
+that niche, and C ABI boundaries accept nothing else. And all of the
+cycle talk above is Cortex-M talk: on a big out-of-order x64 core the
+speculation machinery hides the dependent loads and the shuffles alike,
+every indirect mechanism measures the same ~1 ns, and only the inlining
+tiers differ — which is exactly why this section is titled a *Cortex-M*
+ranking.
+
 ### Code size and dependencies (Cortex-M4, -Os, store + call one lambda)
 
 | | tiny_delegate | std::function |
