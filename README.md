@@ -263,6 +263,49 @@ Assignment is the axis that matters: constant-time and heap-free for the
 delegate at any capture size, versus an `operator new` per assignment
 once `std::function`'s tiny buffer overflows.
 
+### Versus a virtual call — the full dispatch ladder
+
+Same methodology (x64: GCC -O2, best of 5 × 100M calls, opaque pointers
+so nothing folds; ARM: call-site instructions from `arm-none-eabi-g++
+-Os` disassembly for Cortex-M4). The "true" virtual row calls an object
+whose class lives in another TU, so real vtable dispatch is guaranteed:
+
+| Dispatch | x64 ns/call | ARM call site | Cost per binding |
+| --- | --- | --- | --- |
+| direct call, known target | 0.26 (inlined) | 1 instr (`b`) | 0 |
+| virtual, hierarchy visible (speculative devirt) | **0.39** | — | vptr + vtable |
+| raw fn ptr + `void*` ctx | 0.77 | 4 instr | 8 B |
+| virtual, cross-TU (true vtable dispatch) | 0.90 | 3 instr | 4 B vptr **per object** + vtable in flash |
+| `tiny::delegate_ref` (default, fail-closed) | 0.99 | 5 instr | 8 B |
+| `tiny::delegate_ref` (assert disabled) | 0.99 | **2 instr** (`ldrd` + `bx`) | 8 B |
+| `tiny::delegate` (owning, SBO) | 0.98 | 6 instr | 32 B |
+| `std::function` | 0.99 | 13+ instr | 32 B + heap |
+
+What the numbers actually say (x64 run-to-run noise is ~±0.1 ns, so
+true-virtual, both delegates, and `std::function` are effectively tied
+around 1 ns):
+
+- **Mechanically the delegate is at or below a virtual call.** The
+  vtable path is two *dependent* loads (object → vptr → slot) and no
+  null check — a null interface pointer is UB. `delegate_ref` is two
+  *independent* loads from the same 8 bytes; with the assert disabled
+  the compiler fuses them into a single `ldrd` and the whole call site
+  is 2 instructions — below the virtual's 3. The default build spends
+  its 2 extra instructions (`cbnz` + `udf`) on the fail-closed
+  empty-call trap, which the virtual call simply does not have.
+- **The virtual call's real trump card is the compiler, not the
+  mechanism.** When the hierarchy is visible (same TU or LTO), GCC
+  speculatively devirtualizes — vtable compare plus inlined body, 0.39
+  ns. A delegate can never get that treatment: its target is runtime
+  data, invisible to the inliner. If a monomorphic call site sits in a
+  hot inner loop and the type is known at link time, the interface wins.
+- **The cost models differ in kind, not just size.** Virtual dispatch is
+  intrusive: the target must derive from the interface, every *object*
+  carries a vptr (RAM), every class a vtable (flash). `delegate_ref`
+  binds any callable non-intrusively — a method of a class that never
+  heard of you, a lambda, a free function — at a flat 8 B per binding
+  and zero per-object overhead.
+
 ### Code size and dependencies (Cortex-M4, -Os, store + call one lambda)
 
 | | tiny_delegate | std::function |
