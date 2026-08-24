@@ -320,6 +320,36 @@ The mechanisms separate on everything else:
   you, a lambda, a free function — at a flat 8 B per binding and zero
   per-object overhead.
 
+#### Cortex-M ranking: where instruction counts ARE the speed
+
+On an in-order M-core there is no speculation to hide anything, so the
+disassembly is the performance model. Instruction counts below are
+measured (`-Os`, Cortex-M4); cycles are estimated from ARM's published
+M3/M4 timing (`LDR` 2, consecutive independent loads pipeline to +1,
+`MOV` 1, indirect-branch pipeline refill 2–3 — paid equally by every
+row, callee body excluded). Flash wait states scale everything but
+change no rankings:
+
+| # | Dispatch | Instr | Load chain | Est. cycles |
+| --- | --- | --- | --- | --- |
+| 1 | direct call (function / non-virtual method) | 1 | — | ~2–4 |
+| 2 | `tiny::delegate_ref`, assert disabled | **2** | one `ldrd`, independent | ~5–6 |
+| 3 | raw fn ptr + `void*` ctx | 4 | none (register moves) | ~6–7 |
+| 4 | virtual call | 3 | **2 dependent loads** | ~7–8 |
+| 5 | `tiny::delegate_ref`, default (empty-call trap) | 5 | independent + predictable `cbnz` | ~8 |
+| 6 | `tiny::delegate` (owning) | 6 | independent | ~8–9 |
+| 7 | `std::function` | 13+ | frame + spills | ~20+ |
+| 8 | pointer-to-member | 13, stack frame | virtual-bit test, cond. loads | ~20+ |
+
+Two rankings worth noticing. The lenient `delegate_ref` is the cheapest
+indirect dispatch on the platform, full stop: one independent
+double-load and a jump. And the raw function pointer beats the virtual
+call despite *more* instructions — three 1-cycle register moves cost
+less than two loads where the second's address depends on the first's
+result, a stall an in-order pipeline cannot hide. Fewer instructions is
+not the metric; shorter dependency chains are, and the disassembly
+shows both.
+
 ### Code size and dependencies (Cortex-M4, -Os, store + call one lambda)
 
 | | tiny_delegate | std::function |
