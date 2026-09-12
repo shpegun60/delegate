@@ -1,0 +1,30 @@
+# Compile a control first: a missing compiler/header must never count as a pass.
+file(MAKE_DIRECTORY "${BINARY_DIR}")
+file(WRITE "${BINARY_DIR}/control.cpp"
+    "#include \"tiny_delegate.hpp\"\nint main() { tiny::delegate<void()> d{+[] {}}; d(); }\n")
+set(flags "-std=c++${STANDARD}" "-I${SOURCE_DIR}" -c)
+execute_process(COMMAND "${CXX}" ${flags} "${BINARY_DIR}/control.cpp"
+    -o "${BINARY_DIR}/control.o" RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Negative-test control failed:\n${out}\n${err}")
+endif()
+
+file(GLOB sources "${SOURCE_DIR}/tests/negative/*.cpp")
+foreach(source IN LISTS sources)
+    get_filename_component(name "${source}" NAME_WE)
+    file(STRINGS "${source}" expected_line REGEX "^// EXPECT: ")
+    string(REPLACE "// EXPECT: " "" expected "${expected_line}")
+    if(NOT expected)
+        message(FATAL_ERROR "Missing expected diagnostic in ${source}")
+    endif()
+    execute_process(COMMAND "${CXX}" ${flags} "${source}"
+        -o "${BINARY_DIR}/${name}.o" RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    file(WRITE "${BINARY_DIR}/${name}.log" "${out}\n${err}")
+    if(result EQUAL 0)
+        message(FATAL_ERROR "${name}: invalid code compiled")
+    elseif(NOT "${out}\n${err}" MATCHES "${expected}")
+        message(FATAL_ERROR "${name}: failed for an unexpected reason:\n${out}\n${err}")
+    endif()
+endforeach()
+list(LENGTH sources count)
+message(STATUS "${count} misuse cases rejected with the expected diagnostics")

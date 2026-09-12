@@ -1,7 +1,7 @@
+// EXPECT: signature_mismatch
 // tiny_delegate — compact C++17/C++20 embedded callback library
 // https://github.com/shpegun60/delegate
-//
 // Authors: shpegun60 + Claude (Anthropic)
 // SPDX-License-Identifier: MIT
 #include "tiny_delegate.hpp"
-int main() { tiny::delegate<int(int)> d{[](const char*){ return 0; }}; } // несумісна сигнатура
+int main() { tiny::delegate<int(int)> d{[](const char*){ return 0; }}; } // incompatible signature

@@ -1,0 +1,42 @@
+"""Pin the measured Cortex-M4 dispatch and reference-rebinding budgets."""
+import argparse
+from pathlib import Path
+import re
+import subprocess
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--cxx', default='arm-none-eabi-g++')
+parser.add_argument('--objdump', default='arm-none-eabi-objdump')
+parser.add_argument('--build-dir', type=Path, required=True)
+args = parser.parse_args()
+root = Path(__file__).resolve().parents[1]
+args.build_dir.mkdir(parents=True, exist_ok=True)
+
+for optimization in ('-O2', '-Os'):
+    obj = args.build_dir / ('dispatch' + optimization + '.o')
+    subprocess.run([args.cxx, '-std=c++17', '-mcpu=cortex-m4', '-mthumb',
+                    optimization, '-DNDEBUG', '-fno-exceptions', '-fno-rtti',
+                    '-ffreestanding', '-Wall', '-Wextra', '-Wpedantic', '-Werror',
+                    '-I' + str(root), '-c', str(root / 'tests/dispatch_probe.cpp'),
+                    '-o', str(obj)], check=True)
+    dump = subprocess.check_output([args.objdump, '-d', str(obj)], text=True)
+    obj.with_suffix('.disasm').write_text(dump)
+    for symbol in ('dispatch_ref', 'dispatch_own', 'dispatch_sbo', 'borrow_ref', 'bind_ref', 'assign_ref'):
+        match = re.search(r'^[0-9a-f]+ <' + symbol + r'>:\n(.*?)(?=\n\n|\Z)', dump, re.M | re.S)
+        if match is None:
+            raise SystemExit('Missing disassembly for ' + symbol)
+        instructions = re.findall(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+)+([a-z][a-z0-9.]*)\s', match[1], re.M)
+        # Alignment padding after a return is not part of the executed path.
+        if 'bx' not in instructions:
+            raise SystemExit('Missing tail return in ' + symbol)
+        instructions = instructions[:instructions.index('bx') + 1]
+        if symbol.startswith('dispatch_'):
+            if instructions != ['ldrd', 'bx']:
+                raise SystemExit(f'{symbol}: expected ldrd + bx, got {instructions}')
+        elif symbol == 'assign_ref':
+            budget = 6 if optimization == '-O2' else 5
+            if len(instructions) > budget:
+                raise SystemExit(f'{symbol}: pointer assignment budget exceeded: {instructions}')
+        elif len(instructions) > 4 or any(op.startswith('b') for op in instructions[:-1]):
+            raise SystemExit(f'{symbol}: reference rebinding budget exceeded: {instructions}')
+        print(f'{optimization} {symbol}: ' + ', '.join(instructions))

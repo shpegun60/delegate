@@ -1,23 +1,24 @@
 // tiny_delegate — compact C++17/C++20 embedded callback library
 // https://github.com/shpegun60/delegate
-//
 // Authors: shpegun60 + Claude (Anthropic)
 // SPDX-License-Identifier: MIT
 // Heap-fallback build: exactly-one-allocation accounting.
-#ifdef NDEBUG
-#undef NDEBUG
-#endif
 #define TINY_DELEGATE_ENABLE_HEAP_FALLBACK 1
 
-#include <cassert>
+#include "check.hpp"
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <utility>
+#if defined(_MSC_VER)
+#include <malloc.h>
+#endif
 
 static int g_news = 0;
 static int g_deletes = 0;
+static int g_aligned_news = 0;
+static int g_aligned_deletes = 0;
 void* operator new(std::size_t n) {
     ++g_news;
     if (void* p = std::malloc(n)) return p;
@@ -25,6 +26,30 @@ void* operator new(std::size_t n) {
 }
 void operator delete(void* p) noexcept { if (p) { ++g_deletes; std::free(p); } }
 void operator delete(void* p, std::size_t) noexcept { if (p) { ++g_deletes; std::free(p); } }
+
+void* operator new(std::size_t n, std::align_val_t alignment) {
+    ++g_aligned_news;
+    const auto a = static_cast<std::size_t>(alignment);
+#if defined(_MSC_VER)
+    void* p = _aligned_malloc(n, a);
+#else
+    void* p = std::aligned_alloc(a, ((n + a - 1u) / a) * a);
+#endif
+    if (!p) std::abort();
+    return p;
+}
+void operator delete(void* p, std::align_val_t) noexcept {
+    if (!p) return;
+    ++g_aligned_deletes;
+#if defined(_MSC_VER)
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+}
+void operator delete(void* p, std::size_t, std::align_val_t a) noexcept {
+    ::operator delete(p, a);
+}
 
 #include "tiny_delegate.hpp"
 
@@ -42,31 +67,31 @@ int main()
     {
         // Small callable: still inline even in the fallback build.
         D small{[] { return 1; }};
-        assert(small.uses_inline() && !small.uses_heap());
-        assert(g_news == 0);
+        CHECK(small.uses_inline() && !small.uses_heap());
+        CHECK(g_news == 0);
 
         // Big callable: exactly ONE allocation.
         D big{Big{42}};
-        assert(big.uses_heap() && !big.uses_inline());
-        assert(g_news == 1 && g_deletes == 0);
-        assert(big() == 42);
+        CHECK(big.uses_heap() && !big.uses_inline());
+        CHECK(g_news == 1 && g_deletes == 0);
+        CHECK(big() == 42);
 
         // Move of a heap delegate: pointer handoff, NO extra alloc/free.
         D big2{std::move(big)};
-        assert(!big && big2.uses_heap());
-        assert(g_news == 1 && g_deletes == 0);
-        assert(big2() == 42);
+        CHECK(!big && big2.uses_heap());
+        CHECK(g_news == 1 && g_deletes == 0);
+        CHECK(big2() == 42);
 
         // Reassign over heap payload: old freed, new allocated.
         big2 = Big{7};
-        assert(g_deletes == 1 && g_news == 2);
-        assert(big2() == 7);
+        CHECK(g_deletes == 1 && g_news == 2);
+        CHECK(big2() == 7);
 
         // reset frees.
         big2.reset();
-        assert(g_deletes == 2);
+        CHECK(g_deletes == 2);
     }
-    assert(g_news == g_deletes);    // perfect balance, no leaks
+    CHECK(g_news == g_deletes);    // perfect balance, no leaks
 
     // ---- The hybrid tiny::delegate has its own (parallel) heap manager;
     //      it must obey exactly the same accounting. ----
@@ -76,31 +101,31 @@ int main()
         using H = tiny::delegate<int(), 32>;
 
         H h{Big{9}};                              // oversized -> heap
-        assert(h.uses_heap() && h.owning() && !h.uses_inline());
-        assert(g_news == base_news + 1);
-        assert(h() == 9);
+        CHECK(h.uses_heap() && h.owning() && !h.uses_inline());
+        CHECK(g_news == base_news + 1);
+        CHECK(h() == 9);
 
         // Heap payload moved INTO an engaged inline delegate: the inline
         // payload is destroyed, the pointer is handed off, nothing leaks.
         H inline_one{[] { return 5; }};
-        assert(inline_one.uses_inline());
+        CHECK(inline_one.uses_inline());
         inline_one = static_cast<H&&>(h);
-        assert(!h && inline_one.uses_heap() && inline_one() == 9);
-        assert(g_news == base_news + 1);          // no extra allocation
+        CHECK(!h && inline_one.uses_heap() && inline_one() == 9);
+        CHECK(g_news == base_news + 1);          // no extra allocation
 
         // Ref mode never allocates, even in the fallback build.
         auto fn = [] { return 11; };
         H ref{tiny::borrow(fn)};
-        assert(ref.non_owning() && !ref.uses_heap());
-        assert(g_news == base_news + 1);
+        CHECK(ref.non_owning() && !ref.uses_heap());
+        CHECK(g_news == base_news + 1);
 
         // Reassigning heap -> inline frees the heap block.
         inline_one = [] { return 6; };
-        assert(inline_one.uses_inline());
-        assert(g_deletes == base_deletes + 1);
-        assert(inline_one() == 6);
+        CHECK(inline_one.uses_inline());
+        CHECK(g_deletes == base_deletes + 1);
+        CHECK(inline_one() == 6);
     }
-    assert(g_news == g_deletes);
+    CHECK(g_news == g_deletes);
 
     // ---- Over-aligned oversized callable: C++17 aligned new must hold. ----
     {
@@ -111,13 +136,15 @@ int main()
             }
         };
         tiny::delegate_sbo<std::uintptr_t(), 32> d{BigAligned{}};
-        assert(d.uses_heap());
-        assert(d() % 64u == 0u);                  // heap block respects alignas
+        CHECK(d.uses_heap());
+        CHECK(g_aligned_news == 1 && g_aligned_deletes == 0);
+        CHECK(d() % 64u == 0u);                  // heap block respects alignas
         tiny::delegate_sbo<std::uintptr_t(), 32> d2{static_cast<
             tiny::delegate_sbo<std::uintptr_t(), 32>&&>(d)};
-        assert(d2() % 64u == 0u);                 // and survives a move
+        CHECK(d2() % 64u == 0u);                 // and survives a move
     }
-    assert(g_news == g_deletes);                  // aligned delete matched
+    CHECK(g_news == g_deletes);
+    CHECK(g_aligned_news == 1 && g_aligned_deletes == 1);
 
     // ---- A small callable whose move may throw fits the buffer but must
     //      NOT be stored inline (delegate moves are noexcept). With the
@@ -134,20 +161,20 @@ int main()
         static_assert(sizeof(ThrowingMove) <= 32, "fits the buffer by size");
 
         tiny::delegate_sbo<int(), 32> d{ThrowingMove{}};
-        assert(d.uses_heap() && !d.uses_inline());            // rerouted
-        assert(g_news == base_news + 1);
-        assert(d() == 7);
+        CHECK(d.uses_heap() && !d.uses_inline());            // rerouted
+        CHECK(g_news == base_news + 1);
+        CHECK(d() == 7);
 
         tiny::delegate_sbo<int(), 32> d2{static_cast<
             tiny::delegate_sbo<int(), 32>&&>(d)};             // ptr handoff
-        assert(g_news == base_news + 1);
-        assert(d2() == 7);
+        CHECK(g_news == base_news + 1);
+        CHECK(d2() == 7);
 
         tiny::delegate<int(), 32> h{ThrowingMove{}};          // hybrid too
-        assert(h.uses_heap() && h() == 7);
-        assert(g_news == base_news + 2);
+        CHECK(h.uses_heap() && h() == 7);
+        CHECK(g_news == base_news + 2);
     }
-    assert(g_news == g_deletes);
+    CHECK(g_news == g_deletes);
 
     std::printf("heap: news=%d deletes=%d\n", g_news, g_deletes);
     std::puts("PARANOID DELEGATE SUITE (heap-fallback build): ALL OK");

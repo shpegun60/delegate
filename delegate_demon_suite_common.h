@@ -357,9 +357,8 @@ SuiteStats runSuite(const DelegateLogSink& sink) {
         t.check(!moveOnly, QStringLiteral("moved-from delegate becomes empty"));
         t.check(moved(4) == 13, QStringLiteral("moved delegate keeps callable"));
 
-        typename Delegate::fnptr_t nullFn = nullptr;
-        moved = nullFn;
-        t.check(!moved, QStringLiteral("delegate null function pointer resets safely"));
+        moved = nullptr;
+        t.check(!moved, QStringLiteral("delegate explicit nullptr reset"));
     }
 
     t.section(QStringLiteral("delegate_sbo Semantics"));
@@ -382,9 +381,8 @@ SuiteStats runSuite(const DelegateLogSink& sink) {
         t.check(!moveOnly, QStringLiteral("delegate_sbo moved-from instance becomes empty"));
         t.check(moved(4) == 25, QStringLiteral("delegate_sbo moved instance keeps move-only lambda"));
 
-        typename DelegateSbo::fnptr_t nullFn = nullptr;
-        moved = nullFn;
-        t.check(!moved, QStringLiteral("delegate_sbo null function pointer resets safely"));
+        moved = nullptr;
+        t.check(!moved, QStringLiteral("delegate_sbo explicit nullptr reset"));
     }
 
     t.section(QStringLiteral("Custom Size And Alignment"));

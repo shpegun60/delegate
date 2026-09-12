@@ -1,3 +1,5 @@
+// Keep heap-enabled instantiations separate from the default configuration
+// in the same executable; mixing their definitions in one namespace violates ODR.
 #define tiny tiny_heap
 #define TINY_DELEGATE_ENABLE_HEAP_FALLBACK 1
 #include "tiny_delegate.hpp"

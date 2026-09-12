@@ -8,9 +8,8 @@ add_library(tiny_delegate::tiny_delegate ALIAS tiny_delegate)
 target_include_directories(tiny_delegate INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(tiny_delegate INTERFACE cxx_std_17)
 
-# Host tests build only when this project is configured directly, never for
-# consumers via add_subdirectory()/FetchContent. The Qt demo app (delegate.pro)
-# is built separately with qmake and is not part of this build.
+# Host tests default to ON for standalone builds and OFF for consumers using
+# add_subdirectory()/FetchContent. The Qt demo is built separately with qmake.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     option(TINY_DELEGATE_BUILD_TESTS "Build the tiny_delegate test suite" ON)
 else()

@@ -7,56 +7,66 @@ on:
 
 jobs:
   host-tests:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.toolchain.name }} C++${{ matrix.standard }} ${{ matrix.config }}
+    runs-on: ${{ matrix.toolchain.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { name: linux-gcc,    os: ubuntu-latest,  cc: gcc,   cxx: g++ }
-          - { name: linux-clang,  os: ubuntu-latest,  cc: clang, cxx: clang++ }
-          - { name: windows-msvc, os: windows-latest, cc: cl,    cxx: cl }
-          - { name: macos-clang,  os: macos-latest,   cc: clang, cxx: clang++ }
+        toolchain:
+          - { name: linux-gcc, os: ubuntu-latest, cxx: g++ }
+          - { name: linux-clang, os: ubuntu-latest, cxx: clang++ }
+          - { name: windows-msvc, os: windows-latest, cxx: cl }
+          - { name: macos-clang, os: macos-latest, cxx: clang++ }
+        standard: [17, 20]
+        config: [Debug, Release]
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DCMAKE_CXX_STANDARD=${{ matrix.standard }}
         env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
+          CXX: ${{ matrix.toolchain.cxx }}
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
-  negative-compile:
-    name: misuse must not compile
+  sanitizers:
+    name: ${{ matrix.cxx }} ASan + UBSan
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
     steps:
       - uses: actions/checkout@v4
-      - name: Each tests/negative/*.cpp must be rejected
-        run: |
-          fail=0
-          for f in tests/negative/*.cpp; do
-            if g++ -std=c++17 -I. -c "$f" -o /dev/null 2>/dev/null; then
-              echo "ERROR: $f compiled but must be rejected"
-              fail=1
-            else
-              echo "OK: $f rejected"
-            fi
-          done
-          exit $fail
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_STANDARD=20
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -Werror"
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1
 
   cortex-m-cross:
-    name: cortex-m4 cross-compile
+    name: Cortex-M compile and dispatch budgets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install ARM toolchain
-        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
-      - name: Compile probe for Cortex-M4
-        run: >
-          arm-none-eabi-g++ -mcpu=cortex-m4 -mthumb -std=c++17 -O2
-          -Wall -Wextra -Wpedantic -Werror
-          -fno-exceptions -fno-rtti -ffreestanding
-          -I. -c tests/cortexm_probe.cpp -o cortexm_probe.o
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libstdc++-arm-none-eabi-dev
+      - name: Compile without exceptions or RTTI
+        run: |
+          mkdir -p build-arm
+          for cpu in cortex-m0 cortex-m3 cortex-m4 cortex-m7 cortex-m33; do
+            for standard in 17 20; do
+              arm-none-eabi-g++ -mcpu="$cpu" -mthumb -std=c++"$standard" -O2 \
+                -Wall -Wextra -Wpedantic -Werror -fno-exceptions -fno-rtti \
+                -ffreestanding -I. -c tests/cortexm_probe.cpp -o "build-arm/$cpu-$standard.o"
+            done
+          done
+      - name: Check Cortex-M4 machine code
+        run: python3 tests/check_codegen.py --build-dir build-arm/codegen

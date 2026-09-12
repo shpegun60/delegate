@@ -1,0 +1,3 @@
+// EXPECT: TINY_DELEGATE_ENABLE_HEAP_FALLBACK must be 0 or 1
+#define TINY_DELEGATE_ENABLE_HEAP_FALLBACK 2
+#include "tiny_delegate.hpp"

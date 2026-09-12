@@ -43,7 +43,7 @@ timers — see **[COOKBOOK.md](COOKBOOK.md)**.
 - `assert()`-style runtime guards, keyed on `NDEBUG`: in debug builds
   calling an empty delegate or assigning a null function pointer traps
   deterministically (fail-closed); in release builds the checks compile
-  out and every call site is two instructions on Cortex-M. Fully
+  out; the measured `int(int)` call sites use two instructions on Cortex-M4. Fully
   overridable through `TINY_DELEGATE_ASSERT` in either direction
 - Move-only owning delegates
 - Non-owning ref delegate
@@ -611,7 +611,7 @@ Hybrid callback.
 Properties:
 
 - move-only
-- function pointer path for free functions and captureless non-generic lambdas
+- function pointer path for sources convertible to the exact function-pointer signature
 - owning path for normal lambdas/functors
 - explicit ref path via `tiny::borrow(x)`
 - explicit ref path via `tiny::bind<&T::method>(obj)`
@@ -796,9 +796,10 @@ intended.
 **The capacity is part of the type — configure it consistently.**
 `tiny::delegate<void()>` compiled with `TINY_DELEGATE_DEFAULT_BYTES 64` and
 the same spelling compiled with the default are two *different types* with
-different mangled names. Mixing them across translation units fails loudly
-at link time (`undefined reference`) — never silently — but the rules that
-avoid the failure are simple:
+different mangled names. Mixing configurations can violate the one-definition
+rule, including when the delegate is a member of a shared class; a linker
+error is not guaranteed. Keep **all** configuration macros and `NDEBUG`
+consistent across translation units. The rules are:
 
 1. **Never define the macro per-file.** Set it once for the whole project
    in the build system, so every TU agrees:
@@ -853,8 +854,7 @@ The default is keyed on `NDEBUG`, exactly like `<cassert>`:
   instruction on ARM), `std::abort()` elsewhere — instead of continuing
   into undefined behavior such as an indirect call through null.
 - **Release builds (`NDEBUG`) compile the checks out**: every delegate
-  call site becomes two instructions on Cortex-M (`ldrd` + `bx`), the
-  cheapest indirect dispatch on the platform. Calling an empty delegate
+  measured `int(int)` call sites use two instructions on Cortex-M4 (`ldrd` + `bx`). Calling an empty delegate
   is then UB, the same contract as calling through a null interface
   pointer.
 
@@ -1341,10 +1341,10 @@ tiny::delegate_ref<int(int)> ref = tiny::borrow(generic);
 tiny::delegate<int(int)> borrowed = tiny::borrow(generic);
 ```
 
-The important distinction is:
-
-- captureless non-generic lambda can use the function-pointer path
-- generic lambda is treated like a normal functor object
+A captureless lambda, including a generic one, uses the function-pointer path
+when it converts to the delegate's exact `fnptr_t` signature. Otherwise an
+accepted callable is stored as an object. `borrow` explicitly keeps a reference
+to the lambda object.
 
 ## Example Cookbook
 
@@ -1677,7 +1677,8 @@ tiny::delegate<int(int)> cb = generic;
 tiny::delegate_sbo<int(int), 64> box = generic;
 ```
 
-This stores the generic lambda as a normal callable object.
+This captureless generic lambda converts to the matching function pointer.
+A generic lambda that captures state is stored as a callable object.
 
 ### 43. Reconfigure the same API between `delegate_ref` and `delegate`
 
@@ -1743,7 +1744,7 @@ This is the main `auto` pitfall to remember.
 ## Safe-call helpers
 
 `operator()` treats an empty delegate as a contract violation (the default
-policy traps). When "no handler installed" is a *legal* state, use the
+Debug policy traps; Release omits the check). When no handler is installed, use the
 safe-call helpers instead — available on `delegate_ref`, `delegate_sbo`,
 and `delegate` alike:
 
@@ -1761,8 +1762,15 @@ if (auto r = on_sample.call_if(42)) {
 int v = on_sample.call_or([](int x) { return x; }, 42);   // identity default
 ```
 
-Both helpers never trap and never allocate; `call_or` statically checks the
-fallback against the delegate signature.
+Both helpers handle an empty delegate without trapping or allocating storage
+for a target. The selected callable, argument/result construction, or a custom
+assert hook can still allocate, throw, or stop execution. `call_or` checks the
+fallback signature and only inspects its runtime pointer value if the fallback
+is selected. A `void` signature discards a non-void fallback result.
+
+`call_if` returns `std::optional<R>` for a non-void result, so `R` must be a
+non-reference type constructible from its returned value. Use `operator()` or
+`call_or` for reference results and non-movable values.
 
 ## Introspection APIs
 
@@ -1931,6 +1939,46 @@ The delegate owns the lambda object.
 
 But the lambda object still refers to `external`, so `external` must outlive callback use.
 
+### Return references
+
+A reference signature requires a callable that already returns a compatible
+reference. Same-type, cv-qualified and derived-to-base reference conversions
+are accepted. Results returned by value, numeric reference conversions, and
+user-defined reference conversions are rejected; write an explicitly typed
+lambda if a user-defined conversion is intended. The callable remains
+responsible for the lifetime of the object behind the returned reference.
+
+### Mutation, exceptions and concurrency
+
+The delegates provide no synchronization. Protect publication, rebinding and
+invocation against concurrent mutation, including an ISR interrupting a task.
+`call_if` is not an atomic check-and-call operation. A const delegate can invoke
+a mutable target; constness does not imply thread safety.
+
+Constructors and assignment can propagate exceptions from copying, conversion
+or heap allocation. Ordinary assignment destroys the old target first; failure
+then leaves an empty, reusable delegate. Function-pointer conversion and saving
+an aliased source run before reset, so failure there preserves the old target.
+Moves and reset do not throw.
+
+A target destructor sees its owner empty and may call `reset()` again. Other
+mutation of the same delegate from a target constructor, move constructor or
+destructor is unsupported. Do not destroy or replace a running owned callable
+and then access its captures. For a completion callback that may install a new
+callback, move the old delegate to a local owner before invoking it.
+
+Assignment from a reference to the entire currently owned callable is supported.
+An assignment source or borrowed target must not be a subobject that replacing
+the delegate destroys. Borrowing or binding never extends an object's lifetime.
+If `bind` receives a pointer lvalue, it borrows that pointer variable too; both
+the variable and its selected instance must stay valid. Engagement reports a
+stored binding, not the validity of resources referenced by the callable.
+
+Null pointer assignment and null `borrow_t` pointers trigger the assert hook;
+if it returns, the delegate becomes empty. Invalid invocation still requires a
+non-returning hook to prevent undefined behavior. All translation units must
+use the same header revision and configuration; rebuild consumers together.
+
 ## Alignment and Size Rules
 
 Inline fit depends on both:
@@ -1944,6 +1992,26 @@ That means:
 - over-aligned callables may require custom `InlineAlign`
 
 This is expected behavior, not a bug.
+
+`fits_inline<T>()` checks size and alignment only. Actual inline storage also
+requires a non-throwing move constructor. `std::is_constructible` and
+`std::is_assignable` include callable compatibility, source cv/ref category,
+destructor requirements and the configured storage policy.
+
+Rejected construction and assignment name a `callable_error` in the diagnostic:
+
+| Diagnostic | Correction |
+|---|---|
+| `signature_mismatch` | Match the delegate's argument and result types. |
+| `reference_result_requires_compatible_reference` | Return a compatible reference to an existing object. |
+| `source_cannot_construct_callable` | Move a move-only callable, or borrow a long-lived object. |
+| `callable_destructor_must_be_noexcept` | Make the stored callable's destructor non-throwing. |
+| `callable_exceeds_inline_capacity_or_alignment` | Increase capacity/alignment or enable heap fallback. |
+| `inline_callable_move_must_be_noexcept` | Provide a non-throwing move or enable heap fallback. |
+
+`callable_diagnostic<Reason, Source, Signature, NeedBytes, HaveBytes, NeedAlign,
+HaveAlign>` also includes the actual and available storage dimensions. These
+diagnostics use deleted overloads so type traits still report `false`.
 
 ## Convenience Aliases
 
@@ -2004,28 +2072,35 @@ D cb = D::bind<&T::method>(obj);
 cmake -S . -B build && cmake --build build && ctest --test-dir build
 ```
 
-Four adversarial suites run in CI on gcc, clang, MSVC, and macOS, plus an
-arm-none-eabi Cortex-M4 compile job and a "misuse must not compile" job:
+The CI matrix builds C++17 and C++20 in Debug and Release on GCC, Clang,
+MSVC and macOS Clang. Test observations use an always-active `CHECK` macro,
+so Release exercises the library with its real `NDEBUG` policy.
 
-- **core_tests** — instrumented lifetime counters prove zero leaks, zero
-  copies on the move-only path, safe self-move, alignment inside the SBO
-  buffer before and after moves, and **zero heap allocations** (global
-  `operator new`/`delete` are intercepted and must count 0/0).
-- **cross_tu_tests** — a delegate created in one translation unit is moved
-  and destroyed in another, guarding the manager singletons against ODR
-  surprises.
-- **heap_tests** — with `TINY_DELEGATE_ENABLE_HEAP_FALLBACK=1`: exactly one
-  allocation per oversized callable, pointer-handoff moves with no extra
-  alloc/free, and a perfectly balanced alloc/free count at exit.
-- **lenient_tests** — a custom `TINY_DELEGATE_ASSERT` override, verifying
-  the policy hook fires and the object stays in a defined empty state.
-- **tests/negative/** — six misuse cases (borrowing a temporary, oversized
-  callable without fallback, copying a move-only delegate, binding a
-  temporary, signature mismatch, throwing-move callable) that CI proves
-  are rejected at compile time.
+- `core_tests`, `edge_tests`: ownership, moves, forwarding, alignment,
+  constexpr bindings, safe-call behavior and allocation accounting.
+- `cross_tu_tests`: creation, transfer, destruction and non-owning manager
+  identity across translation units.
+- `heap_tests`: ordinary and over-aligned allocation/deallocation, heap
+  handoffs and throwing-move placement.
+- `hardening_tests`, `hardening_heap_tests`: return-reference constraints,
+  conversion categories, aliased assignment and destructor-initiated reset.
+- `exception_tests`, `exception_heap_tests`: failed construction/allocation,
+  reuse after failure, exception propagation and copy-only heap targets.
+- `lenient_tests`, `lenient_heap_tests`: null pointer and allocation failure
+  handling when a custom assert hook returns.
+- `policy_tests`: actual Debug/Release macro behavior and, on POSIX Debug
+  builds, subprocess checks that invalid calls trap instead of segfaulting.
+- `negative_compile`: 36 misuse cases checked by GCC/Clang, with a successful
+  control build and a required diagnostic for each rejection.
 
-The Qt demo app (`delegate.pro`) is a separate interactive test bench and
-is not part of the CMake build.
+Separate CI jobs run ASan/UBSan and compile for Cortex-M0/M3/M4/M7/M33 without
+exceptions or RTTI. `tests/check_codegen.py` checks the Cortex-M4 `int(int)`
+call sites and reference rebinding at both `-O2` and `-Os` using actual
+disassembly. These instruction budgets describe the supplied probes, not all
+possible signatures, targets, compiler versions or hardware timing.
+
+The Qt demo app (`delegate.pro`) remains a separate qmake test bench.
+See [AUDIT.md](AUDIT.md) for the local audit evidence and its limits.
 
 ## Summary
 
