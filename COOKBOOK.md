@@ -7,9 +7,9 @@ while writing the recipes.
 
 ## 1. ROM dispatch table — commands by opcode
 
-Compile-time bindings make `delegate_ref` fully constexpr-constructible,
-so a dispatch table lives in flash (verified in `.rodata`, 8 bytes per
-entry on ARM32, zero RAM, zero startup code):
+Ordinary function pointers, inline `[]`/`+[]` lambdas and template bindings can
+initialize a `constexpr delegate_ref` table in C++17 and C++20. The ARM probe
+places the table in `.rodata`, 8 bytes per entry, with no RAM or startup code:
 
 ```cpp
 static int cmdPing(int)   { return 1; }
@@ -17,13 +17,20 @@ static int cmdReset(int)  { return 2; }
 static int cmdEcho(int x) { return x; }
 
 static constexpr tiny::delegate_ref<int(int)> k_commands[] = {
-    tiny::delegate_ref<int(int)>::bind<&cmdPing>(),
-    tiny::delegate_ref<int(int)>::bind<&cmdReset>(),
+    cmdPing,
+    &cmdReset,
     tiny::delegate_ref<int(int)>::bind<&cmdEcho>(),
+    +[](int x) noexcept { return x * 2; },
+    [](int x) noexcept { return x * 3; },
 };
 
 int dispatch(unsigned op, int arg) { return k_commands[op](arg); }
 ```
+
+The caller must ensure `op` is a valid index. Construction is constant;
+invocation is runtime, so targets can read live data. For the first three
+entries `dispatch(0, 7) == 1`, `dispatch(1, 7) == 2`, `dispatch(2, 7) == 7`;
+the lambda entries return `dispatch(3, 7) == 14` and `dispatch(4, 7) == 21`.
 
 ## 2. Rebindable event slot — empty is legal
 

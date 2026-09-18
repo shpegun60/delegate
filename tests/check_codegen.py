@@ -1,4 +1,4 @@
-"""Pin the measured Cortex-M4 dispatch and reference-rebinding budgets."""
+"""Pin Cortex-M4 dispatch/rebinding budgets and constexpr table placement."""
 import argparse
 from pathlib import Path
 import re
@@ -34,9 +34,29 @@ for optimization in ('-O2', '-Os'):
             if instructions != ['ldrd', 'bx']:
                 raise SystemExit(f'{symbol}: expected ldrd + bx, got {instructions}')
         elif symbol == 'assign_ref':
-            budget = 6 if optimization == '-O2' else 5
-            if len(instructions) > budget:
+            # GCC 13 uses five instructions at -Os; GCC 14 uses the same
+            # six-instruction sequence as -O2, including for the 1.0 baseline.
+            if len(instructions) > 6 or any(op in ('bl', 'blx') for op in instructions):
                 raise SystemExit(f'{symbol}: pointer assignment budget exceeded: {instructions}')
         elif len(instructions) > 4 or any(op.startswith('b') for op in instructions[:-1]):
             raise SystemExit(f'{symbol}: reference rebinding budget exceeded: {instructions}')
         print(f'{optimization} {symbol}: ' + ', '.join(instructions))
+
+    for standard in ('17', '20'):
+        rom_obj = args.build_dir / f'rom-cxx{standard}{optimization}.o'
+        subprocess.run([args.cxx, '-std=c++' + standard, '-mcpu=cortex-m4',
+                        '-mthumb', optimization, '-DNDEBUG', '-fno-exceptions',
+                        '-fno-rtti', '-ffreestanding', '-Wall', '-Wextra',
+                        '-Wpedantic', '-Werror', '-I' + str(root), '-c',
+                        str(root / 'tests/cortexm_probe.cpp'), '-o', str(rom_obj)],
+                       check=True)
+        symbols = subprocess.check_output([args.objdump, '-t', str(rom_obj)], text=True)
+        sections = subprocess.check_output([args.objdump, '-h', str(rom_obj)], text=True)
+        rom_obj.with_suffix('.layout').write_text(sections + '\n' + symbols)
+        table = re.search(r'\s(\.rodata\S*)\s+([0-9a-f]+)\s+cortex_rom$', symbols, re.M)
+        if table is None or int(table[2], 16) != 5 * 8:
+            raise SystemExit('Expected five 8-byte cortex_rom entries in .rodata')
+        for name, size in re.findall(r'^\s*\d+\s+(\S+)\s+([0-9a-f]+)\s', sections, re.M):
+            if name.startswith(('.data', '.bss', '.init_array', '.ctors')) and int(size, 16):
+                raise SystemExit(f'{rom_obj.name}: unexpected writable/startup section {name}')
+        print(f'{optimization} C++{standard} cortex_rom: 40 bytes in {table[1]}, no RAM/startup sections')

@@ -13,7 +13,11 @@ static_assert(std::is_nothrow_move_constructible_v<tiny::delegate<void()>>);
 static_assert(std::is_trivially_copyable_v<tiny::delegate_ref<void()>>);
 struct S { void m(int) {} };
 static int increment(int x) { return x + 1; }
-extern const tiny::delegate_ref<int(int)> cortex_rom[] = {
+extern constexpr tiny::delegate_ref<int(int)> cortex_rom[] = {
+    increment,
+    &increment,
+    +[](int x) noexcept { return x * 2; },
+    [](int x) noexcept { return x * 3; },
     tiny::delegate_ref<int(int)>::bind<&increment>()
 };
 extern "C" int cortex_rom_call(unsigned index, int value) { return cortex_rom[index](value); }

@@ -306,6 +306,11 @@ template <class FnPtr>
 union ref_payload {
     void* object = nullptr;
     FnPtr function;
+
+    constexpr ref_payload() noexcept = default;
+    // Initialize the active member directly: changing union members through
+    // assignment is not a C++17 constant-expression construction path.
+    constexpr explicit ref_payload(FnPtr fp) noexcept : function(fp) {}
 };
 
 // Compare template argument identities without evaluating an address
@@ -368,7 +373,22 @@ public:
     constexpr delegate_ref(std::nullptr_t) noexcept {}
     delegate_ref& operator=(std::nullptr_t) noexcept { reset(); return *this; }
 
-    delegate_ref(fnptr_t fp) { *this = fp; }
+    // Plain functions and captureless lambdas can initialize ROM tables.
+    // Invocation remains runtime; the target need not be a constexpr function.
+    constexpr delegate_ref(fnptr_t fp)
+        : payload_(fp), invoke_(fp ? &invoke_fnptr_ : nullptr) {
+        TINY_DELEGATE_ASSERT(fp, "tiny::delegate_ref: null function pointer");
+    }
+
+    // A table field can implicitly convert a captureless lambda in one step.
+    // Store only its function-pointer value; no callable object is borrowed.
+    // The source category matters for ref-qualified pointer conversions.
+    template <class F, std::enable_if_t<std::is_class_v<std::decay_t<F>>
+              && !std::is_base_of_v<delegate_ref, std::decay_t<F>>
+              && std::is_convertible_v<F&&, fnptr_t>, int> = 0>
+    constexpr delegate_ref(F&& f)
+        : delegate_ref(as_fnptr_(std::forward<F>(f))) {}
+
     delegate_ref& operator=(fnptr_t fp) {
         TINY_DELEGATE_ASSERT(fp, "tiny::delegate_ref: null function pointer");
         if (TINY_DELEGATE_UNLIKELY(!fp)) { reset(); return *this; }
@@ -378,6 +398,14 @@ public:
         replacement.invoke_ = &invoke_fnptr_;
         *this = replacement;
         return *this;
+    }
+
+    template <class F, std::enable_if_t<std::is_class_v<std::decay_t<F>>
+              && !std::is_base_of_v<delegate_ref, std::decay_t<F>>
+              && std::is_convertible_v<F&&, fnptr_t>, int> = 0>
+    delegate_ref& operator=(F&& f) {
+        // Finish an implicit, possibly throwing conversion before rebinding.
+        return *this = as_fnptr_(std::forward<F>(f));
     }
 
     template <class F, std::enable_if_t<std::is_object_v<F>
@@ -524,6 +552,10 @@ public:
 private:
     payload_t payload_{};
     invoke_t  invoke_  = nullptr;
+
+    // A typed parameter performs the implicit conversion admitted above;
+    // static_cast could select a competing explicit conversion operator.
+    static constexpr fnptr_t as_fnptr_(fnptr_t fp) noexcept { return fp; }
 
     static R invoke_fnptr_(payload_t p, Args... a) {
         auto fp = p.function;
@@ -707,7 +739,8 @@ public:
         using DF = std::decay_t<F>;
         if constexpr (std::is_convertible_v<F&&, fnptr_t>) {
             // Complete a possibly stateful/throwing conversion before reset.
-            return *this = static_cast<fnptr_t>(std::forward<F>(f));
+            fnptr_t fp = std::forward<F>(f);
+            return *this = fp;
         } else {
             if constexpr (std::is_object_v<std::remove_reference_t<F>>) {
                 if (detail::erase_ptr(std::addressof(f)) == ctx_) {
@@ -803,7 +836,7 @@ private:
     void assign_callable_(F&& f) {
         using DF = std::decay_t<F>;
         if constexpr (std::is_convertible_v<F&&, fnptr_t>) {
-            fnptr_t fp = static_cast<fnptr_t>(std::forward<F>(f));
+            fnptr_t fp = std::forward<F>(f);
             *this = fp;
         } else {
             if constexpr (std::is_pointer_v<std::remove_reference_t<F>>
@@ -1005,7 +1038,8 @@ public:
         using DF = std::decay_t<F>;
         if constexpr (std::is_convertible_v<F&&, fnptr_t>) {
             // Complete a possibly stateful/throwing conversion before reset.
-            return *this = static_cast<fnptr_t>(std::forward<F>(f));
+            fnptr_t fp = std::forward<F>(f);
+            return *this = fp;
         } else {
             if constexpr (std::is_object_v<std::remove_reference_t<F>>) {
                 if (detail::erase_ptr(std::addressof(f)) == ctx_) {
@@ -1255,7 +1289,7 @@ private:
     void assign_callable_(F&& f) {
         using DF = std::decay_t<F>;
         if constexpr (std::is_convertible_v<F&&, fnptr_t>) {
-            fnptr_t fp = static_cast<fnptr_t>(std::forward<F>(f));
+            fnptr_t fp = std::forward<F>(f);
             *this = fp;
         } else {
             if constexpr (std::is_pointer_v<std::remove_reference_t<F>>

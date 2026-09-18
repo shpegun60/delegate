@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tiny_delegate VERSION 1.0.0 LANGUAGES CXX)
+project(tiny_delegate VERSION 1.1.0 LANGUAGES CXX)
 
 # Header-only library target: tiny_delegate::tiny_delegate.
 add_library(tiny_delegate INTERFACE)

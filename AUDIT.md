@@ -129,3 +129,76 @@ Use `call_if` or `call_or` when empty is an expected state.
 
 Rebuild every consumer with the same header revision and configuration:
 the reference invoker's internal type changed even though its size did not.
+
+## Version 1.1.0 extension — 2026-09-18
+
+The follow-up starts from `e76affb87f479399eec12e80d9ce03e74b4451d9`.
+`delegate_ref` now directly constant-initializes the function member of its
+payload union. Ordinary function pointers and bare `[]`/`+[]` captureless lambdas
+can initialize constexpr tables in C++17 and C++20. A matching assignment
+overload preserves bare-lambda rebinding, and derived-view copying keeps its
+previous behavior. All three types now use the implicit function-pointer
+conversion admitted by their constraints, including mixed implicit/explicit
+ref-qualified conversion operators. Calls still execute at runtime; target
+functions need not be constexpr. The owning types retain their placement construction and
+non-trivial destructors, and therefore are not constexpr table elements.
+
+The tested header SHA-256 is
+`82af1433730d1f7224c07b21c1b0d0b5e0941b84d171faa9f137b85bd58ffa68`.
+As above, checkout line-ending conversion can alter a byte-level file hash.
+
+Local validation of all three types:
+
+| Toolchain / target | Configurations | Result |
+|---|---|---|
+| GCC 13.3 and Clang 18.1, Linux | C++17/20, Debug/Release/ASan+UBSan, warnings as errors | 12 configurations, each 14/14 CTest entries passed |
+| MSVC 19.50, x64 | C++17/20, Debug/Release, `/WX` | 4 configurations, each 13/13 CTest entries passed |
+| Qt 6.10.1, MinGW 13.1 | C++17 Debug/Release console and offscreen UI | 145/145 console checks in each configuration; both UI runs exited 0 |
+| CubeIDE ARM GCC 14.3 | Cortex-M0/M3/M4/M7/M33, C++17/20, assertions enabled/disabled | 20 compile configurations passed |
+| ARM GCC 13.2 and 14.3 | Cortex-M4, `-O2`/`-Os` | Dispatch/rebinding comparison and ROM placement checks passed |
+
+The new tests exercise function, address, noexcept-function, inline-lambda,
+template-function and method bindings; live target data; constexpr copy/reset;
+void/reference results; runtime rebinding; derived-view copying; implicit versus
+explicit conversions; and function-pointer compatibility across the three types.
+Conversion failures must preserve a previous function, inline or heap binding.
+Each Linux CTest run includes the 36 expected-error
+compile cases. Sanitizers remain enabled for both owning storage policies.
+MSVC runs runtime/static-assert tests; the diagnostic-matching negative harness
+remains GCC/Clang-specific. Qt Release does not define `NDEBUG` in the supplied
+project; the CMake Release matrices establish the library's Release policy.
+
+Independent probes additionally exercised 100,000 function/object payload
+transitions; 10,000 vector relocations per owning type; nested wrappers;
+over-aligned heap targets; throwing pointer conversions; callable lifetime
+accounting; returning/throwing custom assertion hooks; and reference adaptation.
+No undefined behavior was found for calls satisfying the documented contracts.
+
+The complete dispatch-probe object files are byte-identical to the starting
+revision with the same compiler and flags, for both ARM compilers at both
+optimization levels. All three `int(int)` dispatch sites remain `ldrd; bx`.
+GCC 14.3 emits six instructions for pointer assignment at `-Os`, whereas
+GCC 13.2 emits five, including in the baseline. The check now accepts the
+measured six-instruction budget and rejects added function calls.
+The five-entry direct-function/lambda/template-binding table occupies 40 bytes
+of `.rodata`; the probe has no writable data or dynamic initializer sections.
+This is code-generation evidence, not a hardware cycle measurement.
+
+GCC 13.3 with UBSan rejects a constexpr null comparison for some function-template
+addresses even in a minimal program without the library. CMake detects that
+compiler limitation. Only that constexpr template test uses the existing
+`bind<>` spelling there; direct runtime template construction and ordinary
+direct constexpr functions/lambdas remain tested. The direct constexpr template
+case is active in the other configurations. Null guards and sanitizers are
+not bypassed. A custom assertion hook must also permit constant evaluation
+on valid input; an unconditional call to a non-constexpr logger prevents it.
+
+The existing caller obligations remain: borrowed objects must outlive their
+callbacks, concurrent access needs synchronization, and user callables must be
+valid. An empty `operator()` is still outside the contract (unchecked in Release
+with the default policy); use `call_if`/`call_or` for a legal empty state or a
+non-returning custom guard when runtime checks are required in Release.
+
+Evidence is retained locally under ignored `build-release-1.1/`. The runtime
+tests, compiler capability check and ARM guards are committed and run by CI.
+These are local results; remote status must be checked for the published commit.

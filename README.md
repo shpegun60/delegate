@@ -5,6 +5,8 @@
 
 `tiny_delegate.hpp` is a compact C++17/C++20 callback library with three related delegate types:
 
+Current version: **1.1.0**. See [CHANGELOG.md](CHANGELOG.md) for release changes.
+
 - `tiny::delegate_ref<Sig>`: non-owning, cheap to copy and rebind
 - `tiny::delegate_sbo<Sig, InlineBytes, InlineAlign>`: owning, move-only, SBO-first
 - `tiny::delegate<Sig, InlineBytes, InlineAlign>`: hybrid, move-only, owns by default but can switch into explicit ref mode
@@ -17,11 +19,48 @@ zero RAM, zero startup code):
 
 ```cpp
 static constexpr tiny::delegate_ref<int(int)> rom_table[] = {
-    tiny::delegate_ref<int(int)>::bind<&freeDouble>(),
-    tiny::delegate_ref<int(int)>::bind<&freeNegate>(),
+    freeDouble,
+    &freeNegate,
+    [](int value) noexcept { return value - 1; },
+    +[](int value) noexcept { return value + 1; },
     tiny::delegate_ref<int(int)>::bind<&StaticSvc::shift, g_svc>(),
 };
 ```
+
+Since 1.1.0, ordinary function pointers and inline `[]` or `+[]` captureless lambdas
+can initialize a `constexpr delegate_ref` directly in C++17 and C++20.
+Only the binding is constant-initialized: `operator()` executes at runtime,
+and the target function can read changing application data. The target does
+not need to be a `constexpr` function.
+
+Bare lambdas use a constrained constructor that converts them to the signature's
+function-pointer type; the closure is not retained. Captureless generic lambdas
+are accepted when that conversion is available. A lambda that captures data
+still needs `tiny::borrow(lvalue)` or an owning delegate. Bare-lambda assignment
+is supported as well.
+
+`bind<&function>()` is also supported and bakes the target into its invoker;
+the ordinary constructor stores a typed function pointer. These forms have
+the same object size but can produce different target-call sequences.
+
+Use `delegate_ref` for ROM tables. `delegate` and `delegate_sbo` manage owned
+objects through placement construction and non-trivial destruction; their
+instances are not constexpr table elements in either supported language mode.
+Their ordinary function, lambda, move and ownership APIs remain available.
+
+Two configuration limits apply to constant initialization:
+
+- A custom `TINY_DELEGATE_ASSERT` hook must allow constant evaluation on valid
+  input. Calling a non-constexpr logger unconditionally prevents constexpr
+  construction; calling it only inside the failed-check branch is compatible.
+- GCC 13.3 with `-fsanitize=undefined` rejects constant null comparisons for
+  some function-template addresses, including in a standalone example without
+  this library. Use `delegate_ref<Sig>::bind<&function<Args...>>()` for that
+  configuration, or a non-generic `[]` wrapper. Ordinary direct-function and
+  non-generic lambda tables
+  and direct template-function construction at runtime remain supported.
+  The test build detects this compiler limitation and tests the fallback;
+  it retains direct constexpr template coverage on unaffected configurations.
 
 For ten compile-verified real-world recipes — ROM dispatch, driver
 callbacks, state tables, override policies, owning pipelines, tickcore
@@ -47,6 +86,8 @@ timers — see **[COOKBOOK.md](COOKBOOK.md)**.
   overridable through `TINY_DELEGATE_ASSERT` in either direction
 - Move-only owning delegates
 - Non-owning ref delegate
+- Constant initialization of `delegate_ref` from ordinary functions and
+  inline `[]` or `+[]` captureless lambdas, including `noexcept` targets
 - Small-buffer optimization with a platform-scaled default capacity
   (four machine words: 16 bytes on a 32-bit MCU, 32 on a 64-bit host)
 - Optional heap fallback
@@ -185,9 +226,9 @@ any build type.
 `call_or(fallback, args...)` — and the same compile-time bindings:
 `bind<&freeFunction>()` and `bind<&T::method, Instance>()` bake the target
 into the generated invoker, so `delegate_ref` tables are fully
-constexpr-constructible and live in flash (verified: a 3-entry table lands
-in `.rodata`, 8 bytes per entry, zero RAM). The non-owning feature sets
-now match completely.
+constexpr-constructible and live in flash (verified in `.rodata`, 8 bytes
+per entry, zero RAM). Ordinary function pointers and `[]`/`+[]` lambdas support
+the same constant initialization since 1.1.0.
 
 What `etl::delegate` does not have at all is the owning tier:
 `tiny_delegate` adds
@@ -452,7 +493,7 @@ Three conclusions fall straight out of the listings:
 | target kinds | functions only; methods need a hand-written `static thunk(void*)` per class | function, method, lambda, functor — one type, thunks generated |
 | empty-call behavior | UB in every build | debug: trap; release: UB |
 | safe-call helpers | none | `call_if`, `call_or` |
-| constexpr / ROM tables | yes | yes (`bind<...>()`) |
+| constexpr / ROM tables | yes | yes (function pointers, `[]`/`+[]`, `bind<...>()`) |
 | C ABI boundary (HAL callbacks, vector tables) | **yes** | no |
 
 Honest footnotes. A *bare* function pointer with no context wins its
@@ -635,10 +676,10 @@ Use it when:
 | Source / behavior | `delegate_ref` | `delegate_sbo` | `delegate` |
 |---|---|---|---|
 | Free function pointer | yes | yes | yes |
-| Captureless non-generic lambda | yes, through function-pointer conversion | yes | yes |
+| Captureless lambda convertible to the signature's function pointer | yes, bare or explicitly converted | yes | yes |
 | Stateful lambda | yes, only via `tiny::borrow(lvalue)` | yes, as owned callable | yes, as owned callable |
-| Move-only lambda | no | yes | yes |
-| Functor object | yes, only via `tiny::borrow(lvalue)` | yes | yes |
+| Move-only lambda | yes, via `tiny::borrow(lvalue)` | yes | yes |
+| Functor object | yes, via `tiny::borrow(lvalue)` or function-pointer conversion | yes | yes |
 | Direct `tiny::borrow(...)` API | yes | no | yes |
 | Direct method-bind API | yes | no | yes |
 | Copyable type | yes | no | no |
@@ -652,7 +693,9 @@ Use it when:
 Accepted forms:
 
 - free-function pointer
-- captureless non-generic lambda, via conversion to function pointer
+- captureless lambda convertible to the signature's function-pointer type,
+  including a generic lambda when its conversion matches
+- object implicitly convertible to that function-pointer type
 - `tiny::borrow(functor_lvalue)`
 - `tiny::borrow(generic_lambda_lvalue)`
 - `tiny::delegate_ref<Sig>::bind<&T::method>(obj)`
@@ -674,6 +717,7 @@ Functor fn;
 Device dev;
 
 tiny::delegate_ref<int(int)> a = &plus_one;
+constexpr tiny::delegate_ref<int(int)> direct = [](int x) { return x + 1; };
 tiny::delegate_ref<int(int)> b = tiny::borrow(fn);
 tiny::delegate_ref<int(int)> c =
     tiny::delegate_ref<int(int)>::bind<&Device::read>(dev);
@@ -690,8 +734,8 @@ Not supported:
 Accepted forms:
 
 - free-function pointer
-- captureless non-generic lambda
-- generic lambda, as owned callable
+- captureless lambda (including generic) convertible to the signature's
+  function pointer; otherwise a compatible lambda is stored as an owned callable
 - stateful lambda
 - move-only lambda
 - functor object
@@ -737,8 +781,8 @@ But note what this means:
 Accepted forms:
 
 - free-function pointer
-- captureless non-generic lambda
-- generic lambda, as owned callable
+- captureless lambda (including generic) convertible to the signature's
+  function pointer; otherwise a compatible lambda is stored as an owned callable
 - stateful lambda
 - move-only lambda
 - functor object
@@ -2078,6 +2122,9 @@ so Release exercises the library with its real `NDEBUG` policy.
 
 - `core_tests`, `edge_tests`: ownership, moves, forwarding, alignment,
   constexpr bindings, safe-call behavior and allocation accounting.
+- `constexpr_tests`, `constexpr_heap_tests`: direct function/lambda ROM tables,
+  live target data, reference/void results, lambda assignment, conversion
+  selection and failure handling across all three function-pointer APIs.
 - `cross_tu_tests`: creation, transfer, destruction and non-owning manager
   identity across translation units.
 - `heap_tests`: ordinary and over-aligned allocation/deallocation, heap
@@ -2096,7 +2143,9 @@ so Release exercises the library with its real `NDEBUG` policy.
 Separate CI jobs run ASan/UBSan and compile for Cortex-M0/M3/M4/M7/M33 without
 exceptions or RTTI. `tests/check_codegen.py` checks the Cortex-M4 `int(int)`
 call sites and reference rebinding at both `-O2` and `-Os` using actual
-disassembly. These instruction budgets describe the supplied probes, not all
+disassembly. It also checks that the five-entry constexpr table occupies
+40 bytes of `.rodata` with no writable data or dynamic initializer sections
+in the ARM probe, for both C++17 and C++20. These instruction budgets describe the supplied probes, not all
 possible signatures, targets, compiler versions or hardware timing.
 
 The Qt demo app (`delegate.pro`) remains a separate qmake test bench.
