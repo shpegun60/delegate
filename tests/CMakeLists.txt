@@ -34,9 +34,10 @@ add_executable(exception_tests exception_tests.cpp)
 add_executable(exception_heap_tests exception_tests.cpp)
 target_compile_definitions(exception_heap_tests PRIVATE TINY_DELEGATE_ENABLE_HEAP_FALLBACK=1)
 add_executable(policy_tests policy_tests.cpp)
+add_executable(context_tests context_tests.cpp)
 
 foreach(t core_tests constexpr_tests constexpr_heap_tests edge_tests cross_tu_tests heap_tests lenient_tests lenient_heap_tests hardening_tests hardening_heap_tests
-          exception_tests exception_heap_tests policy_tests)
+          exception_tests exception_heap_tests policy_tests context_tests)
     target_link_libraries(${t} PRIVATE tiny_delegate::tiny_delegate)
     set_target_properties(${t} PROPERTIES CXX_EXTENSIONS OFF)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

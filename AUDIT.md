@@ -202,3 +202,52 @@ non-returning custom guard when runtime checks are required in Release.
 Evidence is retained locally under ignored `build-release-1.1/`. The runtime
 tests, compiler capability check and ARM guards are committed and run by CI.
 These are local results; remote status must be checked for the published commit.
+
+## Version 1.2.0 extension — 2026-09-20
+
+This extension starts from `a95a9d772570932511ff57325d33ab38f411a624`.
+`delegate_ref` and the hybrid `delegate` add
+`bind_context<&adapter>(context)`: the adapter is a compile-time free-function
+target and the stable lvalue context is the only stored payload. The resulting
+`delegate_ref` remains two words. The hybrid uses its existing non-owning
+manager and does not allocate. `delegate_sbo` remains owning-only.
+
+The binding preserves the exact context type and recovers it before invocation;
+it does not convert a function pointer to an object pointer. Const contexts,
+derived-to-base argument adjustment, `void` results and safe reference results
+are covered. Deleted overloads and static assertions reject temporary contexts,
+null or member-function targets, argument mismatches and reference adaptations
+that would manufacture a temporary. As with every borrowed binding, the context
+must remain alive at the same address for every call.
+
+The tested header SHA-256 is
+`4664d6d36ea8f0b2b38286473e1a244fb74ccb992dafa22b61a4376d4171f359`.
+Line-ending conversion can change this byte-level hash.
+
+Local validation:
+
+| Toolchain / target | Configurations | Result |
+|---|---|---|
+| GCC 13.3.0, WSL Ubuntu 24.04 | C++17/20 Debug/Release; C++20 ASan + UBSan; `-Werror` | 5 configurations, each 15/15 CTest entries passed |
+| MinGW GCC 13.1, Windows | C++17/20 Debug/Release; `-Werror` | 4 configurations, each 15/15 CTest entries passed |
+| MSVC 19.50.35719, x64 | C++17/20 Debug/Release; `/W4 /WX /permissive- /EHsc` | 4 configurations, each 14/14 CTest entries passed |
+| Qt 6.10.1, MinGW 13.1 | C++17 Debug/Release offscreen UI autorun | both runs exited successfully |
+| CubeIDE ARM GCC 14.3.1 | Cortex-M0/M3/M4/M7/M33, C++17/20, assertions enabled/disabled | 20 compile configurations passed |
+
+Every GCC CTest run includes 42 expected-error compilation cases. The six new
+cases cover each rejected `bind_context` contract. MSVC runs the runtime and
+static-assert suites; diagnostic text matching remains GCC/Clang-specific. The
+sanitizer build covers both owning storage policies and the new borrowed path.
+The Windows matrix also exposed a test-only portability assumption: aligned
+allocation accounting now uses `_aligned_malloc`/`_aligned_free` for every
+Windows compiler and `std::aligned_alloc` elsewhere.
+
+On Cortex-M4 at both `-O2` and `-Os`, invocation for `delegate_ref`, `delegate`
+and `delegate_sbo` remains exactly `ldrd; bx`. Creating a context binding is
+three instructions at `-O2` and four at `-Os`, with no helper call. Existing
+borrow and member binding have the same budgets. The five-entry constexpr table
+still occupies 40 bytes of `.rodata` and creates no writable or startup section.
+
+Clang and macOS validation for the published revision belongs to remote CI;
+this section records only the local runs above. Exact remote status must be
+checked against the final published commit, not inferred from an older run.

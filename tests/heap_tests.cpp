@@ -11,7 +11,7 @@
 #include <cstdlib>
 #include <new>
 #include <utility>
-#if defined(_MSC_VER)
+#if defined(_WIN32)
 #include <malloc.h>
 #endif
 
@@ -30,7 +30,7 @@ void operator delete(void* p, std::size_t) noexcept { if (p) { ++g_deletes; std:
 void* operator new(std::size_t n, std::align_val_t alignment) {
     ++g_aligned_news;
     const auto a = static_cast<std::size_t>(alignment);
-#if defined(_MSC_VER)
+#if defined(_WIN32)
     void* p = _aligned_malloc(n, a);
 #else
     void* p = std::aligned_alloc(a, ((n + a - 1u) / a) * a);
@@ -41,7 +41,7 @@ void* operator new(std::size_t n, std::align_val_t alignment) {
 void operator delete(void* p, std::align_val_t) noexcept {
     if (!p) return;
     ++g_aligned_deletes;
-#if defined(_MSC_VER)
+#if defined(_WIN32)
     _aligned_free(p);
 #else
     std::free(p);

@@ -5,7 +5,7 @@
 
 `tiny_delegate.hpp` is a compact C++17/C++20 callback library with three related delegate types:
 
-Current version: **1.1.0**. See [CHANGELOG.md](CHANGELOG.md) for release changes.
+Current version: **1.2.0**. See [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 - `tiny::delegate_ref<Sig>`: non-owning, cheap to copy and rebind
 - `tiny::delegate_sbo<Sig, InlineBytes, InlineAlign>`: owning, move-only, SBO-first
@@ -94,6 +94,9 @@ timers — see **[COOKBOOK.md](COOKBOOK.md)**.
 - Explicit `borrow` and `bind` APIs, including compile-time bindings
   (`bind<&fn>()`, `bind<&T::method, Instance>()`) for constexpr delegate
   tables in flash
+- `delegate_ref` and hybrid `delegate` can bind a compile-time free adapter
+  to a borrowed context with `bind_context<&adapter>(context)`; no closure,
+  allocation or extra storage is introduced
 - Safe-call helpers on every type: `call_if(args...)` (bool for void
   signatures, `std::optional<R>` otherwise) and
   `call_or(fallback, args...)` — for callbacks whose empty state is legal
@@ -699,6 +702,7 @@ Accepted forms:
 - `tiny::borrow(functor_lvalue)`
 - `tiny::borrow(generic_lambda_lvalue)`
 - `tiny::delegate_ref<Sig>::bind<&T::method>(obj)`
+- `tiny::delegate_ref<Sig>::bind_context<&adapter>(context)`
 
 Examples:
 
@@ -713,6 +717,10 @@ struct Device {
     int read(int x) { return x + 100; }
 };
 
+int read_device(Device& device, int x) {
+    return device.read(x);
+}
+
 Functor fn;
 Device dev;
 
@@ -721,7 +729,27 @@ constexpr tiny::delegate_ref<int(int)> direct = [](int x) { return x + 1; };
 tiny::delegate_ref<int(int)> b = tiny::borrow(fn);
 tiny::delegate_ref<int(int)> c =
     tiny::delegate_ref<int(int)>::bind<&Device::read>(dev);
+tiny::delegate_ref<int(int)> d =
+    tiny::delegate_ref<int(int)>::bind_context<&read_device>(dev);
 ```
+
+`bind_context` is for a free adapter whose first argument is the borrowed
+context and whose remaining arguments match the delegate:
+
+```cpp
+int read_register(Device& device, unsigned index) noexcept;
+static Device register_device;
+
+constexpr auto reader =
+    tiny::delegate_ref<int(unsigned)>::bind_context<&read_register>(register_device);
+```
+
+The adapter address is a template argument; the object address is the only
+payload. The object must remain alive at the same address for every call.
+Const contexts, `void` and reference results, and derived-to-base context
+conversion are supported. A temporary context, null adapter, incompatible
+arguments, or a reference result that would bind a temporary is rejected at
+compile time.
 
 Not supported:
 
@@ -788,6 +816,7 @@ Accepted forms:
 - functor object
 - `tiny::borrow(functor_lvalue)`
 - `tiny::bind<&T::method>(obj)`
+- `tiny::delegate<Sig>::bind_context<&adapter>(context)`
 
 Examples:
 
@@ -798,6 +827,8 @@ tiny::delegate<int(int)> c = [sum = 0](int x) mutable { return sum += x; };
 tiny::delegate<int(int)> d = Functor{};
 tiny::delegate<int(int)> e = tiny::borrow(fn);
 tiny::delegate<int(int)> f = tiny::bind<&Device::read>(dev);
+tiny::delegate<int(int)> g =
+    tiny::delegate<int(int)>::bind_context<&read_device>(dev);
 ```
 
 This is the "automatic chooser" type:
@@ -806,6 +837,7 @@ This is the "automatic chooser" type:
 - if the input is a normal callable object, it owns it
 - if the input is `borrow(...)`, it becomes non-owning
 - if the input is `bind(...)`, it becomes non-owning method binding
+- if built with `bind_context(...)`, it becomes a non-owning adapter/context binding
 
 ## Configuration Macros
 

@@ -21,7 +21,8 @@ for optimization in ('-O2', '-Os'):
                     '-o', str(obj)], check=True)
     dump = subprocess.check_output([args.objdump, '-d', str(obj)], text=True)
     obj.with_suffix('.disasm').write_text(dump)
-    for symbol in ('dispatch_ref', 'dispatch_own', 'dispatch_sbo', 'borrow_ref', 'bind_ref', 'assign_ref'):
+    for symbol in ('dispatch_ref', 'dispatch_own', 'dispatch_sbo', 'borrow_ref',
+                   'bind_ref', 'bind_context_ref', 'assign_ref'):
         match = re.search(r'^[0-9a-f]+ <' + symbol + r'>:\n(.*?)(?=\n\n|\Z)', dump, re.M | re.S)
         if match is None:
             raise SystemExit('Missing disassembly for ' + symbol)
