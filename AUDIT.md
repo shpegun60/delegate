@@ -114,7 +114,9 @@ python3 tests/check_codegen.py --build-dir build-arm-codegen
 
 The code-generation command requires `arm-none-eabi-g++` and
 `arm-none-eabi-objdump`. Local logs, baseline reproductions, compiler matrices
-and disassembly are retained in the ignored `build-audit/` directory.
+and disassembly were retained in the ignored `build-audit/` directory during
+that audit. Historical generated build trees were removed during the v1.2.1
+cleanup; the committed tests and linked CI remain available.
 The updated workflow defines 16 host jobs, two sanitizer jobs and one ARM job;
 its YAML and matrix were checked locally. Remote results must be taken from the
 CI run for the exact published commit; the matrix above describes local
@@ -199,8 +201,9 @@ valid. An empty `operator()` is still outside the contract (unchecked in Release
 with the default policy); use `call_if`/`call_or` for a legal empty state or a
 non-returning custom guard when runtime checks are required in Release.
 
-Evidence is retained locally under ignored `build-release-1.1/`. The runtime
-tests, compiler capability check and ARM guards are committed and run by CI.
+Evidence was retained locally under ignored `build-release-1.1/` during that
+audit; this historical build tree was removed during the v1.2.1 cleanup. The
+runtime tests, compiler capability check and ARM guards are committed and run by CI.
 These are local results; remote status must be checked for the published commit.
 
 ## Version 1.2.0 extension — 2026-09-20
@@ -307,8 +310,8 @@ wrappers support signatures containing incomplete argument types. No dispatch
 ABI redesign was introduced during this audit. Scalar/reference callback probes
 and target-specific disassembly remain the relevant performance evidence.
 The independent sources, baseline header, exact commands and output are
-retained in `build-audit-oct18/header-probes/`, including the incomplete-signature
-and before/after assignment diagnostics probes.
+preserved in the release evidence archive's `library/header-probes/`, including
+the incomplete-signature and before/after assignment diagnostics probes.
 
 README performance statements now distinguish recorded timings and instruction
 counts from unmeasured cycle rankings. Inline storage avoids wrapper allocation
@@ -338,10 +341,13 @@ This is a working-file hash; checkout line-ending conversion can change it.
   The five-entry constexpr table remains 40 bytes in `.rodata`, without
   writable or startup sections.
 
-Windows logs are retained under `build-audit-oct18/`. Linux and ARM evidence is
-retained under `build-agent-audit/`. No new board execution or cycle measurement
-was performed. The external lifetime, concurrency, aliasing and reentrancy
-contracts above still apply.
+The [v1.2.1 audit evidence archive](https://github.com/shpegun60/delegate/releases/download/v1.2.1/audit-evidence-v1.2.1.zip)
+preserves the tested header and regression inputs, Windows/Linux test logs,
+ARM disassembly/layout records, object-comparison hashes and independent
+reproductions. The original generated build trees were removed after preserving
+this compact evidence. No new board execution or cycle measurement was
+performed. The external lifetime, concurrency, aliasing and reentrancy contracts
+above still apply.
 
 ### Consumer synchronization and verification
 
