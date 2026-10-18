@@ -114,9 +114,8 @@ python3 tests/check_codegen.py --build-dir build-arm-codegen
 
 The code-generation command requires `arm-none-eabi-g++` and
 `arm-none-eabi-objdump`. Local logs, baseline reproductions, compiler matrices
-and disassembly were retained in the ignored `build-audit/` directory during
-that audit. Historical generated build trees were removed during the v1.2.1
-cleanup; the committed tests and linked CI remain available.
+and disassembly are retained in the ignored `build-audit/` directory.
+The committed tests and linked CI remain available independently of that tree.
 The updated workflow defines 16 host jobs, two sanitizer jobs and one ARM job;
 its YAML and matrix were checked locally. Remote results must be taken from the
 CI run for the exact published commit; the matrix above describes local
@@ -201,9 +200,8 @@ valid. An empty `operator()` is still outside the contract (unchecked in Release
 with the default policy); use `call_if`/`call_or` for a legal empty state or a
 non-returning custom guard when runtime checks are required in Release.
 
-Evidence was retained locally under ignored `build-release-1.1/` during that
-audit; this historical build tree was removed during the v1.2.1 cleanup. The
-runtime tests, compiler capability check and ARM guards are committed and run by CI.
+Evidence is retained locally under ignored `build-release-1.1/`. The runtime
+tests, compiler capability check and ARM guards are committed and run by CI.
 These are local results; remote status must be checked for the published commit.
 
 ## Version 1.2.0 extension — 2026-09-20
@@ -344,10 +342,14 @@ This is a working-file hash; checkout line-ending conversion can change it.
 The [v1.2.1 audit evidence archive](https://github.com/shpegun60/delegate/releases/download/v1.2.1/audit-evidence-v1.2.1.zip)
 preserves the tested header and regression inputs, Windows/Linux test logs,
 ARM disassembly/layout records, object-comparison hashes and independent
-reproductions. The original generated build trees were removed after preserving
-this compact evidence. No new board execution or cycle measurement was
-performed. The external lifetime, concurrency, aliasing and reentrancy contracts
-above still apply.
+reproductions. Generated build trees remain on the original machine: the
+execution environment rejected both the batch cleanup and an explicit removal
+of one verified build directory with `blocked by policy`. No files were
+deleted. The inventory identified 27 build directories plus two generated
+state directories, with 6,445 files totaling 757,730,000 bytes; none contain
+tracked files. The archive preserves the evidence independently of those trees.
+No new board execution or cycle measurement was performed. The external
+lifetime, concurrency, aliasing and reentrancy contracts above still apply.
 
 ### Consumer synchronization and verification
 
