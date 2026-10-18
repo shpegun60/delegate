@@ -5,7 +5,7 @@
 
 `tiny_delegate.hpp` is a compact C++17/C++20 callback library with three related delegate types:
 
-Current version: **1.2.0**. See [CHANGELOG.md](CHANGELOG.md) for release changes.
+Current version: **1.2.1**. See [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 - `tiny::delegate_ref<Sig>`: non-owning, cheap to copy and rebind
 - `tiny::delegate_sbo<Sig, InlineBytes, InlineAlign>`: owning, move-only, SBO-first

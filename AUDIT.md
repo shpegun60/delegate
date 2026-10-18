@@ -252,7 +252,7 @@ Clang and macOS validation for the published revision belongs to remote CI;
 this section records only the local runs above. Exact remote status must be
 checked against the final published commit, not inferred from an older run.
 
-## Follow-up audit — 2026-10-18 (unreleased changes)
+## Version 1.2.1 audit — 2026-10-18
 
 Three parallel reviews covered the complete header implementation, test and
 documentation contracts, generated ARM code, and the telemetry/STM32 consumers.
@@ -261,8 +261,8 @@ The starting library checkout was clean at
 confirmed that both GitHub `main` and the latest release tag, `v1.2.0`, point
 to that commit. Its [CI run](https://github.com/shpegun60/delegate/actions/runs/35478907244)
 completed successfully with 19/19 jobs. Those remote results cover the starting
-commit. The validation below was collected before publication of this untagged
-follow-up; remote CI must be checked against the commit containing these changes.
+commit. The validation below was collected before publication of this patch
+release; remote CI must be checked against the commit containing these changes.
 
 ### Confirmed defect and correction
 
@@ -396,6 +396,6 @@ telemetry checkout's `build/delegate-audit-2026-10-18/` directory, specifically
 `final-cobs-sanitized/summary.json`. `consumer-final.json` records the final
 header hashes before and after the gates, repository HEADs, ELF hash and the
 clean/intermediate versus final rebuild distinction. These results describe the
-tested working-tree snapshot before publication. The vendor copies include the
-untagged audit corrections relative to v1.2.0; the starting-SHA remote CI does
-not qualify those corrections.
+tested working-tree snapshot before publication. Version 1.2.1 includes the
+audit corrections relative to v1.2.0; the starting-SHA remote CI does not qualify
+those corrections.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 — 2026-10-18
 
 - Fixed assignment from callables with restricted copy/move source categories
   when heap fallback is enabled, including mutable-lvalue-only copying and
