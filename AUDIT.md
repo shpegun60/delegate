@@ -113,8 +113,8 @@ python3 tests/check_codegen.py --build-dir build-arm-codegen
 ```
 
 The code-generation command requires `arm-none-eabi-g++` and
-`arm-none-eabi-objdump`. Local logs, baseline reproductions, compiler matrices
-and disassembly are retained in the ignored `build-audit/` directory.
+`arm-none-eabi-objdump`. Local `build-audit/` logs, baseline reproductions,
+compiler matrices and disassembly were removed during the 2026-10-18 cleanup.
 The committed tests and linked CI remain available independently of that tree.
 The updated workflow defines 16 host jobs, two sanitizer jobs and one ARM job;
 its YAML and matrix were checked locally. Remote results must be taken from the
@@ -200,8 +200,8 @@ valid. An empty `operator()` is still outside the contract (unchecked in Release
 with the default policy); use `call_if`/`call_or` for a legal empty state or a
 non-returning custom guard when runtime checks are required in Release.
 
-Evidence is retained locally under ignored `build-release-1.1/`. The runtime
-tests, compiler capability check and ARM guards are committed and run by CI.
+Local `build-release-1.1/` artifacts were removed during the 2026-10-18 cleanup.
+The runtime tests, compiler capability check and ARM guards are committed and run by CI.
 These are local results; remote status must be checked for the published commit.
 
 ## Version 1.2.0 extension — 2026-09-20
@@ -342,12 +342,13 @@ This is a working-file hash; checkout line-ending conversion can change it.
 The [v1.2.1 audit evidence archive](https://github.com/shpegun60/delegate/releases/download/v1.2.1/audit-evidence-v1.2.1.zip)
 preserves the tested header and regression inputs, Windows/Linux test logs,
 ARM disassembly/layout records, object-comparison hashes and independent
-reproductions. Generated build trees remain on the original machine: the
-execution environment rejected both the batch cleanup and an explicit removal
-of one verified build directory with `blocked by policy`. No files were
-deleted. The inventory identified 27 build directories plus two generated
-state directories, with 6,445 files totaling 757,730,000 bytes; none contain
-tracked files. The archive preserves the evidence independently of those trees.
+reproductions. On 2026-10-18, cleanup removed 27 generated build directories
+and two generated-state directories: 6,445 files totaling 757,730,000 bytes.
+After verifying every target stayed inside this checkout, scoped
+`git clean -fdX` removed only the reviewed ignored paths. All 81 tracked files
+matched their SHA-256 identities before and after cleanup, and a final dry run
+found no remaining ignored artifacts. The archive preserves the compact
+evidence independently of those trees.
 No new board execution or cycle measurement was performed. The external
 lifetime, concurrency, aliasing and reentrancy contracts above still apply.
 
