@@ -15,6 +15,8 @@ extern "C" {
 int dispatch_ref(const Ref& d, int n) { return d(n); }
 int dispatch_own(const Own& d, int n) { return d(n); }
 int dispatch_sbo(const Sbo& d, int n) { return d(n); }
+bool query_heap_own(const Own& d) { return d.uses_heap(); }
+bool query_heap_sbo(const Sbo& d) { return d.uses_heap(); }
 void assign_ref(Ref& d, int (*f)(int)) { d = f; }
 void borrow_ref(Ref& d, DispatchTarget& f) { d = tiny::borrow(f); }
 void bind_ref(Ref& d, DispatchTarget& f) { d = Ref::bind<&DispatchTarget::method>(f); }

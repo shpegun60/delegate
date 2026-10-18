@@ -22,7 +22,8 @@ for optimization in ('-O2', '-Os'):
     dump = subprocess.check_output([args.objdump, '-d', str(obj)], text=True)
     obj.with_suffix('.disasm').write_text(dump)
     for symbol in ('dispatch_ref', 'dispatch_own', 'dispatch_sbo', 'borrow_ref',
-                   'bind_ref', 'bind_context_ref', 'assign_ref'):
+                   'bind_ref', 'bind_context_ref', 'assign_ref',
+                   'query_heap_own', 'query_heap_sbo'):
         match = re.search(r'^[0-9a-f]+ <' + symbol + r'>:\n(.*?)(?=\n\n|\Z)', dump, re.M | re.S)
         if match is None:
             raise SystemExit('Missing disassembly for ' + symbol)
@@ -34,6 +35,11 @@ for optimization in ('-O2', '-Os'):
         if symbol.startswith('dispatch_'):
             if instructions != ['ldrd', 'bx']:
                 raise SystemExit(f'{symbol}: expected ldrd + bx, got {instructions}')
+        elif symbol.startswith('query_heap_'):
+            # Heap fallback is disabled: introspection must return false
+            # directly, without reading metadata or calling its manager.
+            if instructions not in (['movs', 'bx'], ['mov.w', 'bx']):
+                raise SystemExit(f'{symbol}: expected constant return, got {instructions}')
         elif symbol == 'assign_ref':
             # GCC 13 uses five instructions at -Os; GCC 14 uses the same
             # six-instruction sequence as -O2, including for the 1.0 baseline.

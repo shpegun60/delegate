@@ -60,6 +60,105 @@ struct Big {
     int operator()() const { return tag; }
 };
 
+template <template <class, std::size_t, std::size_t> class Wrapper>
+static void mutableCopyOnlyAssignment()
+{
+    struct Counts { int alive = 0; int copies = 0; int destroyed = 0; } counts;
+    struct MutableCopyOnly {
+        Counts* counts;
+        int value = 42;
+        explicit MutableCopyOnly(Counts& c) noexcept : counts(&c) { ++counts->alive; }
+        MutableCopyOnly(MutableCopyOnly& other) noexcept
+            : counts(other.counts), value(other.value) {
+            ++counts->alive;
+            ++counts->copies;
+        }
+        ~MutableCopyOnly() { --counts->alive; ++counts->destroyed; }
+        MutableCopyOnly& operator()() { return *this; }
+    };
+    using D = Wrapper<MutableCopyOnly&(), 32, alignof(std::max_align_t)>;
+    static_assert(std::is_constructible_v<D, MutableCopyOnly&>);
+    static_assert(std::is_assignable_v<D&, MutableCopyOnly&>);
+    static_assert(!std::is_constructible_v<D, const MutableCopyOnly&>);
+    static_assert(!std::is_constructible_v<D, MutableCopyOnly>);
+    const int base_news = g_news;
+    const int base_deletes = g_deletes;
+    {
+        MutableCopyOnly source{counts};
+        D d{source};
+        CHECK(d.uses_heap() && d().value == 42 && &d() != &source);
+        CHECK(counts.alive == 2 && counts.copies == 1);
+
+        // Non-aliased assignment must compile whenever its trait accepts it.
+        source.value = 17;
+        d = source;
+        CHECK(d().value == 17 && counts.alive == 2 && counts.copies == 2);
+        CHECK(counts.destroyed == 1);
+
+        // Escaping the entire owned target is supported: preserve it before reset.
+        d().value = 29;
+        d = d();
+        CHECK(d().value == 29 && counts.alive == 2 && counts.copies == 4);
+        CHECK(counts.destroyed == 3);
+        CHECK(g_news == base_news + 3 && g_deletes == base_deletes + 2);
+        d.reset();
+        CHECK(!d && counts.alive == 1 && counts.destroyed == 4);
+    }
+    CHECK(counts.alive == 0 && counts.copies == 4 && counts.destroyed == 5);
+    CHECK(g_news == base_news + 3 && g_deletes == base_deletes + 3);
+}
+
+template <template <class, std::size_t, std::size_t> class Wrapper>
+static void volatileRvalueOnlyAssignment()
+{
+    struct Counts { int alive = 0; int moves = 0; int destroyed = 0; } counts;
+    struct VolatileRvalueOnly {
+        Counts* counts;
+        int value = 42;
+        explicit VolatileRvalueOnly(Counts& c) noexcept : counts(&c) { ++counts->alive; }
+        VolatileRvalueOnly(VolatileRvalueOnly&&) = delete;
+        VolatileRvalueOnly(volatile VolatileRvalueOnly&& other) noexcept
+            : counts(other.counts), value(other.value) {
+            ++counts->alive;
+            ++counts->moves;
+        }
+        ~VolatileRvalueOnly() { --counts->alive; ++counts->destroyed; }
+        volatile VolatileRvalueOnly&& operator()() {
+            return static_cast<volatile VolatileRvalueOnly&&>(*this);
+        }
+    };
+    using D = Wrapper<volatile VolatileRvalueOnly&&(), 32, alignof(std::max_align_t)>;
+    static_assert(std::is_constructible_v<D, volatile VolatileRvalueOnly&&>);
+    static_assert(std::is_assignable_v<D&, volatile VolatileRvalueOnly&&>);
+    static_assert(!std::is_constructible_v<D, VolatileRvalueOnly&&>);
+    static_assert(!std::is_constructible_v<D, VolatileRvalueOnly&>);
+    const int base_news = g_news;
+    const int base_deletes = g_deletes;
+    {
+        volatile VolatileRvalueOnly source{counts};
+        D d{std::move(source)};
+        CHECK(d.uses_heap() && d().value == 42);
+        CHECK(counts.alive == 2 && counts.moves == 1);
+
+        source.value = 17;
+        d = std::move(source);
+        CHECK(d().value == 17 && counts.alive == 2 && counts.moves == 2);
+        CHECK(counts.destroyed == 1);
+
+        auto&& owned = d();
+        CHECK(&owned != &source);
+        owned.value = 29;
+        d = d();
+        CHECK(d().value == 29 && counts.alive == 2 && counts.moves == 4);
+        CHECK(counts.destroyed == 3);
+        CHECK(g_news == base_news + 3 && g_deletes == base_deletes + 2);
+        d.reset();
+        CHECK(!d && counts.alive == 1 && counts.destroyed == 4);
+    }
+    CHECK(counts.alive == 0 && counts.moves == 4 && counts.destroyed == 5);
+    CHECK(g_news == base_news + 3 && g_deletes == base_deletes + 3);
+}
+
 int main()
 {
     using D = tiny::delegate_sbo<int(), 32>;
@@ -174,6 +273,12 @@ int main()
         CHECK(h.uses_heap() && h() == 7);
         CHECK(g_news == base_news + 2);
     }
+    CHECK(g_news == g_deletes);
+
+    mutableCopyOnlyAssignment<tiny::delegate>();
+    mutableCopyOnlyAssignment<tiny::delegate_sbo>();
+    volatileRvalueOnlyAssignment<tiny::delegate>();
+    volatileRvalueOnlyAssignment<tiny::delegate_sbo>();
     CHECK(g_news == g_deletes);
 
     std::printf("heap: news=%d deletes=%d\n", g_news, g_deletes);

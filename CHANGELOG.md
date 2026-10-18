@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Fixed assignment from callables with restricted copy/move source categories
+  when heap fallback is enabled, including mutable-lvalue-only copying and
+  volatile-rvalue-only moving. Both owning types now support ordinary assignment
+  and replacement from an escaped reference to their entire target consistently
+  with their construction/assignment traits.
+- With heap fallback disabled, `uses_heap()` now returns `false` directly
+  without indirect manager dispatch. Cortex-M code-generation checks cover
+  this query as well as the existing invocation and rebinding budgets.
+- Clarified the limits of recorded performance results, inline capacity,
+  callable allocation costs and compiler devirtualization in the README.
+
 ## 1.2.0 — 2026-09-20
 
 - Added `bind_context<&adapter>(context)` to `tiny::delegate_ref` and the

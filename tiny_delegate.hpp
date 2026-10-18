@@ -686,7 +686,13 @@ public:
 
     constexpr explicit operator bool() const noexcept { return invoke_ != nullptr; }
 
-    constexpr bool uses_heap() const noexcept { return mgr_ ? mgr_->uses_heap(*this) : false; }
+    constexpr bool uses_heap() const noexcept {
+        if constexpr (TINY_DELEGATE_ENABLE_HEAP_FALLBACK) {
+            return mgr_ ? mgr_->uses_heap(*this) : false;
+        } else {
+            return false;
+        }
+    }
     constexpr bool uses_inline() const noexcept { return (invoke_ != nullptr) && !uses_heap(); }
 
     static constexpr std::size_t inline_capacity_bytes() noexcept { return InlineBytes; }
@@ -777,7 +783,12 @@ public:
                     // Preserve an escaped reference to our own target.
                     DF saved(std::forward<F>(f));
                     reset();
-                    assign_callable_(std::move_if_noexcept(saved));
+                    if constexpr (std::is_constructible_v<DF, decltype(std::move_if_noexcept(saved))>) {
+                        assign_callable_(std::move_if_noexcept(saved));
+                    } else {
+                        // Heap targets may require the original source's cv/ref category.
+                        assign_callable_(std::forward<F>(saved));
+                    }
                     return *this;
                 }
             }
@@ -988,7 +999,13 @@ public:
     constexpr bool non_owning() const noexcept { return mgr_ == &mgr_ref_(); }
     constexpr bool owning() const noexcept { return (invoke_ != nullptr) && !non_owning(); }
 
-    constexpr bool uses_heap() const noexcept { return mgr_ ? mgr_->uses_heap(*this) : false; }
+    constexpr bool uses_heap() const noexcept {
+        if constexpr (TINY_DELEGATE_ENABLE_HEAP_FALLBACK) {
+            return mgr_ ? mgr_->uses_heap(*this) : false;
+        } else {
+            return false;
+        }
+    }
     constexpr bool uses_inline() const noexcept { return owning() && !uses_heap(); }
 
     R operator()(Args... args) const {
@@ -1076,7 +1093,12 @@ public:
                     // Preserve an escaped reference to our own target.
                     DF saved(std::forward<F>(f));
                     reset();
-                    assign_callable_(std::move_if_noexcept(saved));
+                    if constexpr (std::is_constructible_v<DF, decltype(std::move_if_noexcept(saved))>) {
+                        assign_callable_(std::move_if_noexcept(saved));
+                    } else {
+                        // Heap targets may require the original source's cv/ref category.
+                        assign_callable_(std::forward<F>(saved));
+                    }
                     return *this;
                 }
             }

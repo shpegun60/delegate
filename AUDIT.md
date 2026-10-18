@@ -251,3 +251,151 @@ still occupies 40 bytes of `.rodata` and creates no writable or startup section.
 Clang and macOS validation for the published revision belongs to remote CI;
 this section records only the local runs above. Exact remote status must be
 checked against the final published commit, not inferred from an older run.
+
+## Follow-up audit — 2026-10-18 (unreleased changes)
+
+Three parallel reviews covered the complete header implementation, test and
+documentation contracts, generated ARM code, and the telemetry/STM32 consumers.
+The starting library checkout was clean at
+`5143bfa6ae2372b60f387feca57a69f7a55169db`. A fresh fetch and `ls-remote`
+confirmed that both GitHub `main` and the latest release tag, `v1.2.0`, point
+to that commit. Its [CI run](https://github.com/shpegun60/delegate/actions/runs/35478907244)
+completed successfully with 19/19 jobs. Those remote results cover the starting
+commit. The validation below was collected before publication of this untagged
+follow-up; remote CI must be checked against the commit containing these changes.
+
+### Confirmed defect and correction
+
+With heap fallback enabled, a callable having only a mutable copy constructor,
+`F(F&)`, was accepted by `is_constructible` and `is_assignable`. Construction
+worked, but even non-aliased assignment failed to compile: the runtime alias
+branch unconditionally instantiated a move from its saved target, which that
+callable cannot perform. Both owning types now preserve the original source's
+cv/ref category when the `move_if_noexcept` expression cannot construct the
+target. This also handles a constructor accepting only `volatile F&&` while the
+ordinary move constructor is deleted; merely copying a saved mutable lvalue
+would still reject that otherwise-admitted source.
+
+The heap regressions exercise both source categories, both wrappers, normal
+assignment and `d = d()`, check preserved state and verify balanced
+construction/destruction and allocation/deallocation. This is a compile-time
+admission defect, not a newly demonstrated runtime memory error. No additional
+lifetime or undefined-behavior defect was confirmed for calls satisfying the
+documented contracts.
+
+### Optimization and its limits
+
+With heap fallback disabled, both owning types now return `false` directly from
+`uses_heap()`. The query does not need a manager load or an indirect call. The
+existing object layout and invocation ABI remain unchanged.
+
+ARM GCC 13.2.1 and 14.3.1 emit `movs; bx` (4 bytes) for each no-heap query
+at `-O2` and `-Os`. In the GCC 13.2.1 baseline comparison, the `-Os` query used
+12 bytes and manager dispatch; heap-enabled query objects remain byte-identical
+to that baseline. With GCC 13.2.1, the original dispatch probe, compiled
+separately against the starting and final headers, also produces byte-identical
+object files at both optimization levels. GCC 14.3.1 passed the code-generation
+gates; whole-object baseline comparisons were not collected for that compiler.
+The added permanent query probes are checked by `check_codegen.py`.
+
+A separate move-count probe exposed a limit for non-trivial arguments passed by
+value: the tested delegate call performs two argument moves, compared with one
+for `std::function` and zero for a direct call from a prvalue. Changing every
+trampoline to take references would change scalar and small-structure calling
+conventions. Selecting by size/triviality also needs care because the current
+wrappers support signatures containing incomplete argument types. No dispatch
+ABI redesign was introduced during this audit. Scalar/reference callback probes
+and target-specific disassembly remain the relevant performance evidence.
+The independent sources, baseline header, exact commands and output are
+retained in `build-audit-oct18/header-probes/`, including the incomplete-signature
+and before/after assignment diagnostics probes.
+
+README performance statements now distinguish recorded timings and instruction
+counts from unmeasured cycle rankings. Inline storage avoids wrapper allocation
+only when the target meets the storage policy; callable operations can still
+allocate. A known local delegate binding can be inlined by the compiler.
+
+### Local verification
+
+The final header SHA-256 is
+`b9bc65327969a766ed3e076f2665add228145b6349508e30ada02222ed4d2e69`.
+This is a working-file hash; checkout line-ending conversion can change it.
+
+- GCC 13.3: C++17/20, Debug/Release, plus C++20 ASan/UBSan, `-Werror`, five
+  configurations with 15/15 CTest entries passing in each.
+- Clang 18.1.3: C++17 Debug and C++20 ASan/UBSan, `-Werror`, two
+  configurations with 15/15 CTest entries passing in each.
+- Each GCC/Clang configuration includes a successful control compilation and
+  rejection of 42 misuse cases with the expected diagnostics.
+- MSVC x64: C++17/20, Debug/Release, `/WX /EHsc`, four configurations with
+  14/14 CTest entries passing in each.
+- Qt 6.10.1 / MinGW 13.1: fresh C++17 Debug and Release builds; both offscreen
+  `--autorun-exit` test-suite runs exited 0.
+- ARM GCC 13.2.1: Cortex-M0/M3/M4/M7/M33, C++17/20, assertions enabled and
+  disabled, 20 compile configurations passed without exceptions or RTTI.
+- ARM GCC 13.2.1 and CubeIDE GCC 14.3.1: `-O2`/`-Os` code-generation gates
+  passed. Each of the three scalar invocation sites remains `ldrd; bx`.
+  The five-entry constexpr table remains 40 bytes in `.rodata`, without
+  writable or startup sections.
+
+Windows logs are retained under `build-audit-oct18/`. Linux and ARM evidence is
+retained under `build-agent-audit/`. No new board execution or cycle measurement
+was performed. The external lifetime, concurrency, aliasing and reentrancy
+contracts above still apply.
+
+### Consumer synchronization and verification
+
+At the start, the standalone telemetry checkout was clean at
+`f760d69e80200d30c2e2c62c1426700d9a30ad99`, matching live GitHub `main`.
+Its [CI run](https://github.com/shpegun60/telemetry/actions/runs/39073259430)
+was successful for that exact starting SHA. Its `lib/delegate` header matched
+the unmodified v1.2.0 release byte for byte.
+
+The actual H753 firmware uses a separate header under
+`power_analyzer_h753/lib/delegate`, inside the power_analyzer repository. That
+copy was still based on `3d970b5e92a950fbcd52ac3153b28d23c99092c2` and did not
+contain the previous hardening or later releases. The firmware repository's
+`night_builds` HEAD, `c4a724aeb6e68e91c2a702237d1735319ea84301`, matches its live
+Bitbucket branch. Existing unrelated documentation/tool-setting edits were
+left in place; audit source edits were limited to the delegate headers and
+their provenance READMEs in the consumers.
+
+Both vendor headers now match this audit's final header byte for byte, with
+their READMEs recording the upstream base, both local changes and the actual
+SHA-256. The library invocation ABI and configuration macros remain consistent
+within each rebuilt program. Current HTTP route bindings target long-lived
+service objects; registration precedes dispatch in the web task. No current
+application lifetime or ISR/task race defect was confirmed by this source
+inspection.
+
+The firmware's maintained DelegateCheck passed its 12 host checks, oversized
+callable rejection and CubeIDE GCC 14.3.1 Cortex-M7 compile check. A full clean
+firmware build completed with the first corrected header; after the final
+cv/ref-category correction, all 18 affected objects were rebuilt and linked
+successfully, with no diagnostics in that final rebuild. The clean build had
+22 existing warnings outside the delegate code. Final image sections are
+text 856088, data 14984 and bss 831899 bytes; these are build sizes, not a
+controlled code-size benchmark against the previous header. The final ELF
+SHA-256 is
+`eca233672e8d80349dfe1f08231e0a3b06ea7c049f985e250d952d25349b7524`.
+
+The pinned COBS/telemetry integration passed 368 checks with Clang 18 ASan/UBSan.
+Its `summary.json` records unchanged before/after input hashes, including the
+final delegate header. The complete Clang 18.1.3 C++20 ASan/UBSan consumer
+runner completed all 352 commands: 125 successful positive checks and 227
+expected compile refusals. Its 22 executions comprise 16 normal programs and
+six intentional-abort controls, with 1,572,379 runtime checks and no unexpected
+failures. It also checked 55 standalone public headers. The telemetry ARM
+consumer gate completed all 336 commands: 114 successful positive checks and
+222 expected compile refusals.
+CubeIDE GCC 14.3.1 used Cortex-M7 hard-float, C++20, `-O2`/`-Os`, no exceptions
+and no RTTI; slot dispatch matched the manual comparisons, and both ID codegen
+and mutation-control probes passed. Consumer evidence is retained under the
+telemetry checkout's `build/delegate-audit-2026-10-18/` directory, specifically
+`final-sanitized/summary.json`, `final-arm-cubeide/summary.json` and
+`final-cobs-sanitized/summary.json`. `consumer-final.json` records the final
+header hashes before and after the gates, repository HEADs, ELF hash and the
+clean/intermediate versus final rebuild distinction. These results describe the
+tested working-tree snapshot before publication. The vendor copies include the
+untagged audit corrections relative to v1.2.0; the starting-SHA remote CI does
+not qualify those corrections.

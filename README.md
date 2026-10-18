@@ -279,9 +279,11 @@ Its strength is clarity, predictability, and a very good ownership model for rea
 
 ## Performance vs std::function
 
-Measured, not estimated (GCC -O2; call numbers are the best of 5 runs of
-100M calls; assignment is 10M iterations; ARM numbers from
-arm-none-eabi-g++ -Os for Cortex-M4):
+Recorded benchmark results (GCC -O2; call numbers are the best of 5 runs of
+100M calls; assignment is 10M iterations; ARM instruction counts are from
+arm-none-eabi-g++ -Os for Cortex-M4). Timings depend on the host, compiler,
+callable and selected inline capacity; they are examples, not guarantees.
+The committed ARM probes can reproduce the dispatch instruction counts.
 
 ### Object sizes (RAM per stored callback)
 
@@ -296,8 +298,10 @@ arm-none-eabi-g++ -Os for Cortex-M4):
 `std::function` looks smaller than the owning delegates until a real
 capture arrives: its internal buffer holds only ~8–16 B (libstdc++) and
 anything else becomes the 16/32 B object **plus a heap block plus
-allocator overhead** — while the delegate stays flat, with the capacity
-you chose. `delegate_ref` matches a raw pointer pair exactly.
+allocator overhead**. An owning delegate stays within its fixed object size
+when the callable meets its inline-storage policy; heap fallback, if enabled,
+also needs a separate allocation. `delegate_ref` matches a raw pointer pair
+on the measured ARM32 and x64 targets.
 
 ### Call and assignment speed (x64, GCC -O2)
 
@@ -307,9 +311,13 @@ you chose. `delegate_ref` matches a raw pointer pair exactly.
 | assign small lambda (16 B capture) | — | **0.94 ns** | 3.0 ns |
 | assign big lambda (48 B capture) | — | **0.96 ns, inline** | 21.4 ns, **heap allocation each time** |
 
-Assignment is the axis that matters: constant-time and heap-free for the
-delegate at any capture size, versus an `operator new` per assignment
-once `std::function`'s tiny buffer overflows.
+The recorded 48 B inline result requires an explicitly enlarged inline
+capacity (for example, `delegate<Sig, 64>`); it does not fit the current
+32 B x64 default. With heap fallback disabled, oversized callables are
+rejected at compile time. With fallback enabled, an oversized, over-aligned
+or potentially throwing-move callable uses the heap. Inline storage removes
+the delegate's allocation, but target copy/move constructors and destructors
+can perform arbitrary work, including their own allocations.
 
 ### The full dispatch ladder: function, method, virtual, PMF, delegates
 
@@ -329,7 +337,7 @@ the PMF value likewise comes from another TU:
 | `tiny::delegate_ref` — lambda, method, or function alike (debug: trap guard) | 0.8–1.2 | 5 instr | 8 B |
 | `tiny::delegate_ref` (release, `NDEBUG`) | 0.8–1.2 | **2 instr** (`ldrd` + `bx`) | 8 B |
 | `tiny::delegate` / `delegate_sbo` (owning) | 0.97 | 5 / **2** instr (same call site as `ref`) | 32 B |
-| `std::function` | 0.97 | 13+ instr | 32 B + heap |
+| `std::function` | 0.97 | 13+ instr | 16 B on ARM32 + possible heap |
 
 The honest x64 reading first: every *true indirect* dispatch on a big
 out-of-order core — virtual, fn pointer, PMF, any delegate,
@@ -338,15 +346,17 @@ within run-to-run noise. Speed separates the *inlining tiers* (direct
 0.26, speculatively devirtualized 0.39), not the indirect mechanisms.
 The mechanisms separate on everything else:
 
-- **The delegate call site is one shape for every target kind.** Bind a
-  free function, a method (runtime or compile-time instance), or a
-  capturing lambda — the caller always executes the same two loads and
-  a jump; what varies is the one-line trampoline behind `invoke_`. C++
+- **The tested `int(int)` call site has one shape for all target kinds.**
+  Bind a free function, a method (runtime or compile-time instance), or a
+  capturing lambda — the opaque caller loads the payload and invoker and
+  jumps; the trampoline behind `invoke_` supplies the target-specific work. C++
   gives methods no such uniformity natively: the built-in
   pointer-to-member is 8 bytes that carry a this-adjustment and a
   virtual-bit test, and its ARM call site is 13 instructions with a
   stack frame — worse than `std::function`'s. This is the row delegates
-  were invented to delete.
+  were invented to delete. Non-trivial arguments passed by value can incur
+  additional moves through the erased invoker and trampoline. For a hot API,
+  use reference arguments when that matches its ownership and lifetime needs.
 - **Mechanically the delegate is at or below a virtual call.** The
   vtable path is two *dependent* loads (object → vptr → slot) with no
   null check — a null interface pointer is UB. `delegate_ref` is two
@@ -355,12 +365,12 @@ The mechanisms separate on everything else:
   call site is 2 instructions, below the virtual's 3. A debug build
   spends 2 extra instructions (`cbnz` + `udf`) on the fail-closed
   empty-call trap the virtual call simply does not have.
-- **The virtual call's real trump card is the compiler, not the
-  mechanism.** With the hierarchy visible (same TU or LTO), GCC
-  speculatively devirtualizes: vtable compare plus inlined body, 0.39
-  ns. A delegate can never get that treatment — its target is runtime
-  data, invisible to the inliner. A monomorphic hot-loop call site with
-  a link-time-known type is the one place the interface genuinely wins.
+- **Compiler visibility can dominate dispatch cost.** With the hierarchy
+  visible (same TU or LTO), GCC can speculatively devirtualize a virtual
+  call. A delegate call can also inline when the compiler can prove its
+  stored binding, for example after constructing a local delegate from a
+  known function. The opaque runtime bindings in these probes deliberately
+  retain indirect dispatch; they do not predict every optimized call site.
 - **The cost models differ in kind.** Virtual dispatch is intrusive:
   the target must derive from the interface, every *object* carries a
   vptr (RAM), every class a vtable (flash). `delegate_ref` binds any
@@ -368,20 +378,19 @@ The mechanisms separate on everything else:
   you, a lambda, a free function — at a flat 8 B per binding and zero
   per-object overhead.
 
-#### Cortex-M ranking: where instruction counts ARE the speed
+#### Cortex-M4 dispatch probes and cycle estimates
 
-On an in-order M-core there is no speculation to hide anything, so the
-disassembly is the performance model. Instruction counts below are
-measured (`-Os`, Cortex-M4); cycles are estimated from ARM's published
-M3/M4 timing (`LDR` 2, consecutive independent loads pipeline to +1,
-`MOV` 1, indirect-branch pipeline refill 2–3 — paid equally by every
-row, callee body excluded). Flash wait states scale everything but
-change no rankings:
+Instruction counts below are measured (`-Os`, Cortex-M4); cycles are
+estimates using nominal M3/M4 instruction timings, with the callee body
+excluded. They are not target cycle measurements. Memory placement,
+alignment, flash wait states, caches, branch behavior and the trampoline
+can change total cost and ordering. Results for these M4 probes do not
+establish a performance ranking for every Cortex-M core or signature.
 
-Every tiny delegate flavor — `delegate_ref`, `delegate_sbo`, and the
-owning `delegate` — compiles to the *identical* call-site shape (the
-owning ones just read at a small offset), so each ranking row below
-covers all three:
+For the supplied `int(int)` probe, every tiny delegate flavor —
+`delegate_ref`, `delegate_sbo`, and the owning `delegate` — compiles to the
+same call-site shape (the owning ones read at a small offset), so each
+delegate row below covers all three:
 
 | # | Dispatch | Instr | Load chain | Est. cycles |
 | --- | --- | --- | --- | --- |
@@ -393,15 +402,12 @@ covers all three:
 | 6 | `std::function` | 13+ | frame + spills | ~20+ |
 | 7 | pointer-to-member | 13, stack frame | virtual-bit test, cond. loads | ~20+ |
 
-Two rankings worth noticing. The release-mode delegate is the cheapest
-indirect dispatch on the platform, full stop: one independent
-double-load and a jump — and that holds for the owning flavors too,
-not only the two-pointer `ref`. And the raw function pointer beats the
-virtual call despite *more* instructions — three 1-cycle register
-moves cost less than two loads where the second's address depends on
-the first's result, a stall an in-order pipeline cannot hide. Fewer
-instructions is not the metric; shorter dependency chains are, and the
-disassembly shows both.
+The release-mode delegate has the fewest call-site instructions among
+the indirect-dispatch probes shown here: one double-load and a jump,
+including for the owning flavors. The raw function-pointer probe uses
+register moves, while the virtual-call probe has dependent loads. Both
+instruction count and dependency chains help explain cost; actual cycle
+comparisons require measurements on the intended target and memory layout.
 
 #### The disassembly, read closely
 
@@ -473,13 +479,13 @@ Three conclusions fall straight out of the listings:
    code. The hop is gone, and because both words sit adjacent, the
    hardware fetches them with a single `ldrd`.
 
-2. **Versus the fn pointer: the struct layout IS the calling
-   convention.** The fn-pointer call site has zero loads — and still
-   loses, because two separate values arrive in the wrong registers and
-   need three `mov`s to match the callee's ABI. The delegate's pair is
+2. **The struct layout fits this calling convention.** The fn-pointer
+   probe has zero loads but needs three `mov`s because its separate
+   arguments arrive in different registers from those the target expects.
+   The delegate's pair is
    laid out so `ldrd r0, r3` drops `payload_` directly into r0 — exactly
    where the invoker expects its first argument — and `invoke_` into r3
-   for the `bx`. Nothing to rearrange, ever.
+   for the `bx`. Other signatures can require different argument handling.
 
 3. **The punchline:** a delegate *is* "fn ptr + ctx", packed into the
    ABI-optimal shape — two adjacent words (one `ldrd`), payload first
@@ -526,17 +532,13 @@ time should be bound with `bind<&fn>()` — its trampoline is a *direct*
 inlines into the trampoline outright. The runtime-pointer rows above
 apply only when the function's identity is genuinely a runtime value.
 
-The rule in one line: **the delegate wins when there is a context to
-deliver** (it rides to r0 for free) **and matches when the target is
-known at compile time**; a runtime-valued, context-free pointer is the
-one case where the payload slot and forwarder are ballast — one or two
-instructions plus a second pipeline refill, and 8 B instead of 4. C
-ABI boundaries accept nothing but the raw pointer anyway. And all of the
-cycle talk above is Cortex-M talk: on a big out-of-order x64 core the
-speculation machinery hides the dependent loads and the shuffles alike,
-every indirect mechanism measures the same ~1 ns, and only the inlining
-tiers differ — which is exactly why this section is titled a *Cortex-M*
-ranking.
+For these signatures, a context binding has an economical call site,
+while a runtime-valued, context-free function pointer needs an additional
+forwarder and an 8 B binding instead of a bare 4 B pointer. A known target
+can inline into the trampoline or into the caller. These instruction
+counts explain the tested layouts, not a universal timing advantage.
+The recorded x64 indirect-call timings fall in a similar range; use a
+representative benchmark on the intended system to choose between them.
 
 ### Code size and dependencies (Cortex-M4, -Os, store + call one lambda)
 
@@ -549,9 +551,10 @@ ranking.
 The call path is two loads, a predictable null check, and a tail jump —
 the invoker receives the payload pointer directly, exactly one
 indirection, and the empty-check branch is laid out cold via
-`TINY_DELEGATE_UNLIKELY`. Assignment never touches the heap unless the
-application explicitly enabled the fallback, so its cost is constant and
-deterministic — the property that matters on an MCU.
+`TINY_DELEGATE_UNLIKELY`. With fallback disabled the delegate itself does
+not allocate. Assignment still runs user-defined callable operations, so
+their execution time and allocation behavior determine whether the whole
+operation is suitable for a timing-sensitive MCU path.
 
 ## Where does a callable live?
 
@@ -582,8 +585,9 @@ Three properties fall out of the table:
   placement rule is a single public formula: fits by size and alignment
   (`fits_inline<T>()`) **and** is nothrow-move-constructible → inline;
   otherwise heap (if enabled) or a compile error.
-- **The fallback build accepts everything std::function accepts** — the
-  strict no-heap guarantee is a choice, not a limitation.
+- **The fallback build removes inline-capacity and nothrow-move limits.**
+  Invocation, construction, safe reference-result adaptation and
+  non-throwing destruction constraints still apply.
 
 ## Consuming the library
 
@@ -600,8 +604,10 @@ only needs the repository root on its include path and C++17.
   target_link_libraries(app PRIVATE tiny_delegate::tiny_delegate)
   ```
 
-  The test suite builds only when the project is configured directly
-  (`cmake -S . -B build && ctest --test-dir build`), never for consumers.
+  `TINY_DELEGATE_BUILD_TESTS` defaults to `ON` for a standalone build and
+  `OFF` for consumers. Override it explicitly when needed. To run the suite:
+  `cmake -S . -B build`, `cmake --build build`, then
+  `ctest --test-dir build --output-on-failure`.
 
 ## Header
 
@@ -856,6 +862,7 @@ Define these before including the header.
 Default inline byte capacity used by:
 
 - `tiny::delegate<Sig>`
+- `tiny::delegate_sbo<Sig>`
 - free `tiny::bind<&T::method>(obj)` helper
 
 Default (platform-scaled — four machine words, never below the layout
@@ -920,8 +927,8 @@ Default:
 
 ### `TINY_DELEGATE_ASSERT(expr, msg)`
 
-User hook for runtime assertions. It guards every unsafe entry point:
-calling an empty delegate and assigning a null function pointer.
+User hook for runtime assertions. It checks empty calls and null pointer
+inputs. It cannot validate borrowed lifetimes or concurrent access.
 
 The default is keyed on `NDEBUG`, exactly like `<cassert>`:
 
@@ -929,8 +936,8 @@ The default is keyed on `NDEBUG`, exactly like `<cassert>`:
   deterministically — `__builtin_trap()` on GCC/Clang (a single `udf`
   instruction on ARM), `std::abort()` elsewhere — instead of continuing
   into undefined behavior such as an indirect call through null.
-- **Release builds (`NDEBUG`) compile the checks out**: every delegate
-  measured `int(int)` call sites use two instructions on Cortex-M4 (`ldrd` + `bx`). Calling an empty delegate
+- **Release builds (`NDEBUG`) compile the checks out**: the measured
+  `int(int)` call sites use two instructions on Cortex-M4 (`ldrd` + `bx`). Calling an empty delegate
   is then UB, the same contract as calling through a null interface
   pointer.
 
@@ -1959,7 +1966,7 @@ Effect:
 
 - small callables fit inline
 - oversized callables fail at compile time
-- no hidden heap allocation
+- no allocation by the delegate wrapper; callable operations can still allocate
 
 For extremely hot paths with stable lifetime, `tiny::delegate_ref` is often the cleanest choice.
 
